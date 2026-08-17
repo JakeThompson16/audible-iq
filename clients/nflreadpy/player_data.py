@@ -13,13 +13,18 @@ RAW_STAT_COLUMNS = [
 
     'rushing_fumbles_lost', 'receiving_fumbles_lost', 'sack_fumbles_lost',
     
-    'receptions', 'receiving_yards', 'receiving_tds', 'receiving_2pt_conversions', 'receiving_first_downs'
+    'receptions', 'targets', 'receiving_yards', 'receiving_tds', 'receiving_2pt_conversions', 'receiving_first_downs'
 ]
 
 PROCESSED_STAT_COLUMNS = [
     'passing_inc', 'over_300_passing_yards', 'over_400_passing_yards',
     'over_25_completions', 'over_100_rushing_yards', 'over_200_rushing_yards',
-    'over_20_carries', 'te_receptions', 'wr_receptions', 'rb_receptions', 'fumbles_lost'
+    'over_20_carries', 'te_receptions', 'wr_receptions', 'rb_receptions', 'fumbles_lost',
+    'opportunities'
+]
+
+GAME_ID_COLUMNS = [
+    'season', 'week', 'opponent_team'
 ]
 
 
@@ -119,7 +124,14 @@ def _build_stats(df: pl.DataFrame) -> pl.DataFrame:
             pl.col('receiving_fumbles_lost') +
             pl.col('sack_fumbles_lost')
         )
-        .alias('fumbles_lost')
+        .alias('fumbles_lost'),
+
+        # Opportunities to show volume for WR/RB
+        (
+            pl.col('targets') +
+            pl.col('carries')
+        )
+        .alias('opportunities')
     )
 
     return df
@@ -148,6 +160,7 @@ def load_player_stats(seasons: int | list[int]) -> pl.DataFrame:
 
     return df.select(
         PLAYER_METADATA +
+        GAME_ID_COLUMNS +
         RAW_STAT_COLUMNS +
         PROCESSED_STAT_COLUMNS
     )
