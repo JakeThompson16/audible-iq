@@ -258,6 +258,15 @@ Write every response to the user in `response.md` at the repo root, fully
 overwriting the file each time (no appending, no history). The chat message
 should only point to the file.
 
+- Applies to **every** response: answers to questions, clarifying questions,
+  status updates, and end-of-task/job reports. Not just long reports.
+- `response.md` holds the full text of that response, the same content that
+  would otherwise have gone in chat. Don't write a shorter summary there.
+- When working in a git worktree, "repo root" means the worktree root. Commit
+  `response.md` with the work so it survives worktree cleanup.
+- The chat message stays minimal (a pointer to the file, plus any one-line
+  status marker the harness requires, e.g. `result:`).
+
 ## Style/scope conventions
 
 - Prefer simple, explainable logic over marginal-accuracy complexity,
