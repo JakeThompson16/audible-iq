@@ -27,7 +27,7 @@ This separation means adding a new platform (e.g. ESPN, Yahoo) or data source on
 
 ## Scope
 
-Currently focused on offensive skill positions (QB/RB/WR/TE). Kicker, team defense/IDP, and play-level long-touchdown bonus categories are intentionally out of scope, see code comments for details.
+Currently focused on offensive skill positions (QB/RB/WR/TE). Kicker, team defense/IDP, and play-level long-touchdown bonus categories are intentionally out of scope, see code comments for details. The experimental RB stat-vector projection also omits 2-pt conversions, first downs, fumbles, and yardage/carry threshold bonuses (they score 0).
 
 ## Model Evaluation
 
@@ -92,6 +92,24 @@ Re-run on standard PPR scoring (nflreadpy's `fantasy_points_ppr`, same 1,779 QB-
 By season: 2023 2.48, 2024 3.47, 2025 2.90. Without an intercept: 2.71. R² 0.24. The rush yield is nearly identical across scoring systems (0.94 vs 0.95 points per rush); the difference comes from pass attempts being worth less under standard PPR (0.32 vs 0.40), so the weight is sensitive to how the league scores passing.
 
 Limits: the weight is the average scoring yield per attempt under this league's scoring, so it changes with scoring settings (e.g. pass TD value). It is descriptive (same-week), not a causal or predictive weight, and it is not yet used in the pipeline; QB skew still filters on `trailing_attempts_avg` only.
+
+## RB stat-vector projection (experimental, not in production)
+
+Instead of projecting fantasy points (which ties the model to one league's scoring), predict the raw RB stat line and score it with the unmodified `calculate_points_vectorized`. Volume models (carries, targets) and rate models (ypc, rush TD/carry, catch rate, yards/reception, rec TD/reception) are separate OLS fits on trailing per-stat averages, a recent-usage delta, and `epa_allowed_rush`/`epa_allowed_pass` (opponent EPA/play allowed vs league, shifted and blended like opponent skew). Yards and TDs are derived by multiplication. Run: `python rb_stat_vector_eval.py`.
+
+Held-out RB results (window n=8, same rows for every method, `engine/metrics.py` harness, one Sleeper league's scoring):
+
+| Method | 2024→2025 MAE / R² / Spearman | 2025→2024 MAE / R² / Spearman |
+|---|---|---|
+| Stat vector (OLS rates) | **4.430** / **0.425** / **0.743** | 4.444 / 0.413 / 0.721 |
+| Stat vector (rates weighted by attempts) | 4.487 / 0.427 / 0.742 | 4.499 / 0.421 / 0.722 |
+| Current `rolling_avg_prior + opponent_skew` | 4.513 / 0.407 / 0.732 | 4.396 / 0.434 / 0.727 |
+| `rolling_avg_prior` only | 4.441 / 0.408 / 0.735 | **4.373** / **0.436** / **0.728** |
+| Last week's points | 5.435 / 0.009 / 0.649 | 5.257 / 0.138 / 0.607 |
+
+It roughly ties the current formula: better in one direction, worse in the other. Almost all the signal is in the volume models (carries R² ≈ 0.57); per-game rate models explain ≤ 1.5% of variance and mostly regress to league average. Unweighted rate fits under-project by 0.2-0.5 points/game; weighting by attempts removes the bias but raises MAE slightly.
+
+Known limitations: 2-pt conversions, first downs, fumbles, and 100/200-yard / 20-carry bonuses are not predicted and contribute 0 (on actual 2024/25 RB stats that omission costs 0.11 points/game on average for the tested league). RB only; QB/WR/TE not built.
 
 ## Tech
 

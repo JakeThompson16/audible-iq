@@ -31,7 +31,12 @@ a raw Sleeper call.
 - Tool contract slice — `tools/expected_points.py`, `tools/registry.py`,
   `domain/tool_result.py`
 - PBP scaffolding — `clients/nflreadpy/pbp_data.py`,
-  `projections/boom_bust/features/aggregate_pbp.py` (returns nothing)
+  `projections/boom_bust/features/aggregate_pbp.py` (returns nothing; pass
+  filter now excludes sacks, 2026-09-26)
+- RB stat-vector projection (2026-09-26, experimental, standalone) —
+  `projections/expected_points/features/epa_allowed.py`, `stat_rolling.py`,
+  `projections/expected_points/stat_vector/rb.py`, driver `rb_stat_vector_eval.py`.
+  Roughly ties the current formula on held-out RB; promotion is Q-11.
 
 ## Not started
 NiceGUI app; boom/bust threshold + distribution; inference path; leaguemate

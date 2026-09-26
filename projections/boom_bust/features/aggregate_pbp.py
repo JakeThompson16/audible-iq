@@ -66,6 +66,13 @@ def _construct_rushing_columns(pbp_data: pl.DataFrame) -> pl.DataFrame:
     :return: play-by-play DataFrame with columns needed for rushing boom/bust aggregation
     """
 
+    # play_type == 'run' (not the `rush` column): `rush` treats QB scrambles
+    # as pass plays, dropping ~1,063 carries (2024) that official stats count
+    # and that _build_qb_df's designed_run flag relies on.
+    # Accepted known gap vs official carries (REG 2024: 14,317 rows vs 14,687):
+    # kneels are play_type == 'qb_kneel' (405) and are excluded here, while 36
+    # two-point runs are included. 14,317 - 36 + 405 = 14,686. Kneels are not
+    # fantasy-relevant, so this is left as-is.
     rushes = pbp_data.filter(
         pl.col('play_type') == 'run'
     )
@@ -96,8 +103,14 @@ def _construct_passing_columns(pbp_data: pl.DataFrame) -> pl.DataFrame:
     :return: play-by-play DataFrame with columns needed for passing boom/bust aggregation
     """
 
+    # Sacks sit inside play_type == 'pass' (1,314 in REG 2024) but are not
+    # pass attempts. The nflfastR `pass_attempt` column can't be used instead:
+    # it also includes sacks. With sacks removed, REG 2024 passer-attributed
+    # rows = 17,839 vs 17,811 official attempts; the +28 is 99 two-point tries
+    # (included here) minus 71 spikes (play_type == 'qb_spike', excluded).
     passes = pbp_data.filter(
-        pl.col('play_type') == 'pass'
+        (pl.col('play_type') == 'pass')
+        & (pl.col('sack') == 0)
     )
 
     passes = passes.with_columns(

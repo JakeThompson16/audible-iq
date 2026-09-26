@@ -36,6 +36,26 @@ Layered to isolate external API/data-source dependencies from core logic:
     `trailing_attempts_avg`.
   - `opponent_skew.py` — Adjusted Points Allowed (APA): opponent-adjusted
     matchup scoring per defense/position, cumulative across the season.
+  - `epa_allowed.py` — `epa_allowed_pass` / `epa_allowed_rush` per
+    (defteam, season, week): opponent EPA/play allowed minus that week's
+    league EPA/play, then the same shape as opponent skew (week-level
+    `.shift(1)`, cumulative mean, prior-season blend at min(n/9, 0.9)), shrunk
+    toward 0 by effective n = n_games + (1 − w) · prior_season_games. Pass =
+    `play_type == 'pass' & sack == 0`, run = `play_type == 'run'` (shared with
+    `aggregate_pbp.py`).
+  - `stat_rolling.py` — per-stat trailing features for the stat vector:
+    `roll_<volume>`, `roll_<rate>` (ratio of rolling sums), `delta_<volume>`
+    (3-game minus 8-game mean). Partitioned by `gsis_id` only, so windows
+    roll across the season boundary.
+- `projections/expected_points/stat_vector/rb.py` — EXPERIMENTAL, not
+  wired into production. RB-only portable expected points: OLS volume
+  models (carries, targets) + rate models (ypc, rush_td_rate, catch_rate,
+  ypr, rec_td_rate), stats derived by multiplication, scored by the
+  unmodified `calculate_points_vectorized`. Never predicts fantasy points
+  directly (that locks the model to one league's scoring). Driver:
+  `rb_stat_vector_eval.py`. Promotion is OPEN_QUESTIONS.md Q-11 (it
+  introduces fitted coefficients, which the "no fitted model" decision
+  below would have to be revisited for).
 - `engine/expected_points.py` — `calculate_expected_points(stats_df, skew_df)`:
   joins rolling stats to opponent skew (same validated join keys as
   `test.py` — week/season/opponent_team/position) and computes
@@ -138,6 +158,17 @@ targets/carries when projecting. RB/WR use combined `opportunities`
 (carries + targets) rather than position-typical stat alone, to correctly
 capture dual-usage players (e.g. Deebo Samuel, Curtis Samuel) who'd be
 undercounted by targets-only or carries-only filtering.
+
+**RB stat-vector matchup inputs** (`stat_vector/rb.py`): rush-side models
+(carries, ypc, rush_td_rate) use `epa_allowed_rush`; receiving-side models
+(targets, catch_rate, ypr, rec_td_rate) use `epa_allowed_pass`. This resolves
+the "should RB also get epa_allowed_pass?" question: yes, but only on the
+receiving-work models, since each model's matchup term should describe the
+play type that produces that stat. Mixing both into every model would just add
+noise terms. Rate models fit only on rows where the rate is defined
+(denominator > 0). A player with history but no attempts of a kind in the
+window gets the pooled training-season RB rate for that `roll_<rate>`.
+Rookies with no history stay None.
 
 **Confidence tiers** (`engine/expected_points.py`): derived *solely* from
 player-side `games_this_season` — not opponent_skew's `n_games`, not outcome

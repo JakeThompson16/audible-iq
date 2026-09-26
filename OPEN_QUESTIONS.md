@@ -101,12 +101,47 @@ Numbering is stable; don't renumber._
   Vision says "highly customizable based on league settings".
 - **Resolution path:** at minimum, surface unsupported-nonzero fields as a
   warning/known-limitation per league; decide which to actually support.
+- **Extension 2026-09-26 (RB stat-vector projection, `projections/expected_points/stat_vector/rb.py`):**
+  the stat vector predicts only carries, rushing yards/TDs, targets, receptions, receiving
+  yards/TDs. **Not predicted, contribute 0** through the same mechanism (the column is absent,
+  so `calculate_points_vectorized` skips it): 2-pt conversions (`rush_2pt`, `rec_2pt`), first
+  downs (`rush_fd`, `rec_fd`), fumbles (`fum_lost`), and threshold bonuses
+  (`bonus_rush_yd_100/200`, `bonus_rush_att_20`). The bonuses can't just be thresholded from
+  the prediction: E[1{yards ≥ 100}] ≠ 1{E[yards] ≥ 100}. They would need a distribution
+  (ties into Q-3). Measured cost on actual 2024/25 RB stats, tested league: mean(actual −
+  recomposed) = −0.053 points/game, mean |gap| = 0.108, 94.9% of rows exact.
 
 ### Q-9. Trigger-based automation — OPEN (scope unclear)
 - **Cause:** referenced in the audit request but absent from the pasted
   vision text (possibly in the truncated portion). Interacts with Q-1.
 - **Resolution path:** confirm whether it's in V1 and what triggers (e.g.
   weekly refresh, lineup-lock reminders, waiver deadlines).
+
+### Q-11. Promote the RB stat-vector projection? — OPEN (2026-09-26)
+- **Cause:** portable (league-agnostic) expected points via predicted raw stats +
+  unmodified scoring. Held-out RB at n=8 roughly ties `rolling_avg_prior + opponent_skew`
+  (MAE 4.430 vs 4.513 on 2024→2025; 4.444 vs 4.396 on 2025→2024; Spearman 0.743/0.721 vs
+  0.732/0.727). See README "RB stat-vector projection" and `rb_stat_vector_eval.py`.
+- **Sub-decisions:** (a) OLS vs attempt-weighted rate models: unweighted under-projects
+  0.2-0.5 pts/game (per-game ypc 4.18 vs pooled 4.39; rush TD rate 0.027 vs 0.033), weighted
+  is unbiased but MAE +0.055; (b) this adds fitted coefficients to expected points, which
+  conflicts with CLAUDE.md's "no fitted parameter in the projection" stance. That stance
+  needs an explicit revisit before promotion, not a silent change; (c) QB/WR/TE follow only
+  if (a)/(b) are resolved.
+- **Also found:** `epa_allowed_rush` on carries flips sign between fits (+15.1 p<0.001 vs
+  −1.0 n.s.); the only matchup term stable in both directions is weighted ypc ×
+  `epa_allowed_rush` (+3.7 / +5.7, p ≤ 0.03).
+
+### Q-12. PBP count reconciliation — ACCEPTED (2026-09-26)
+- Pass plays = `play_type == 'pass' & sack == 0` (nflfastR `pass_attempt` includes sacks,
+  so it can't be used). REG 2024: 17,839 vs 17,811 official = +99 two-point tries − 71 spikes.
+- Rush plays = `play_type == 'run'`: 14,317 vs 14,687 official = −405 kneels
+  (`play_type == 'qb_kneel'`) + 36 two-point runs (off by 1). Accepted as-is; excluding
+  2-pt tries from both would be a further filter change, not done.
+- Skew drops rows with `n_games < min_games` (3) and shrinks the rest by plain `n_games`, so
+  weeks 1-3 get skew 0 and early weeks are shrunk hard, even though a full prior season
+  is blended in. `epa_allowed` uses effective n = n_games + (1 − w) ·
+  prior_season_games instead; `opponent_skew.py` itself unchanged.
 
 ### Q-10. Long-lived carry-overs (from CLAUDE.md / README) — DEFERRED
 - Confidence-tier thresholds are provisional; calibration was non-monotonic
