@@ -18,9 +18,17 @@ def _calculate_position_skew(
 
     joined = pos_stats.join(games_df, on=["team", "season", "week"], how="inner")
 
-    joined = joined.with_columns(
-        (pl.col("fantasy_points") - pl.col("rolling_avg_prior")).alias("residual")
-    ).sort(["opponent", "season", "week"])
+    # Aggregate to one residual per (defense, season, week) BEFORE shifting, so
+    # .shift(1)/cum_* operate over games (weeks), not player-rows: no same-week
+    # leakage, and n_games counts games.
+    joined = (
+        joined.with_columns(
+            (pl.col("fantasy_points") - pl.col("rolling_avg_prior")).alias("residual")
+        )
+        .group_by(["opponent", "season", "week"])
+        .agg(pl.col("residual").mean())
+        .sort(["opponent", "season", "week"])
+    )
 
     joined = joined.with_columns(
         pl.col("residual").shift(1).over(["opponent", "season"]).alias("residual_prior")
@@ -110,6 +118,9 @@ def calculate_all_position_skews(
         calculate_te_skew(stats_df, games_df),
         calculate_qb_skew(stats_df, games_df),
     ])
+
+    assert not df.select(["defense", "week", "season", "position"]).is_duplicated().any(), \
+        "skew_df has duplicate (defense, week, season, position) keys"
 
     # Sample-size-weighted shrinkage toward 0, replacing the old hard ±8
     # clip. Low-n estimates (noisy, per the same low-n_games clustering

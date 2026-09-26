@@ -35,7 +35,7 @@ def add_rolling_features(stats_df: pl.DataFrame, window: int = 6) -> pl.DataFram
     stats_df = stats_df.with_columns([
         pl.col("fantasy_points")
             .shift(1)
-            .rolling_mean(window_size=window)
+            .rolling_mean(window_size=window, min_samples=1)
             .over(partition)
             .alias("_current_season_rolling_avg"),
 
@@ -47,19 +47,19 @@ def add_rolling_features(stats_df: pl.DataFrame, window: int = 6) -> pl.DataFram
 
         pl.col("opportunities")
             .shift(1)
-            .rolling_mean(window_size=window)
+            .rolling_mean(window_size=window, min_samples=1)
             .over(partition)
             .alias("trailing_opportunities_avg"),
 
         pl.col("targets")
             .shift(1)
-            .rolling_mean(window_size=window)
+            .rolling_mean(window_size=window, min_samples=1)
             .over(partition)
             .alias("trailing_targets_avg"),
 
         pl.col("attempts")
             .shift(1)
-            .rolling_mean(window_size=window)
+            .rolling_mean(window_size=window, min_samples=1)
             .over(partition)
             .alias("trailing_attempts_avg"),
     ])

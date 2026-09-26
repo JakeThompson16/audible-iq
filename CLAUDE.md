@@ -108,6 +108,14 @@ protect). A wide `sanity_clip` (±12, `calculate_all_position_skews`)
 remains afterward as a defense-in-depth guardrail only (e.g. n=0 edge
 cases) — it is NOT the flattening mechanism; shrinkage is.
 
+> **WARNING (2026-09-24): the grid-search finding below, the k=16 choice, and the README
+> "Model Evaluation" numbers were produced on a pipeline with three defects, now fixed as of
+> 2026-09-24: duplicated skew keys fanning out predictions (B-1), a null-until-window rolling
+> average that bypassed the early-season blend (B-2), and a row-level (not game-level)
+> skew shift that leaked same-week data and miscounted `n_games` (B-3). Re-run at the
+> existing k=16 shows skew no longer helps even QB (see STATUS.md / OPEN_QUESTIONS.md Q-4).
+> Treat the paragraph below as historical until the grid search is re-run.**
+
 Grid search finding: shrinkage brought RB/WR/TE to roughly break-even with
 the `rolling_avg_prior`-only baseline (previously net-negative at every
 tested k below 16), but an n-segmented breakdown at k=16 showed the R²
@@ -212,6 +220,12 @@ scoring configs including a TE-premium league) — exact matches.
   n_games / sample sizes, check percentiles) rather than trusting that code
   which runs without error is correct. Several real bugs in this project
   were caught this way, not by code review.
+
+## Response output convention
+
+Write every response to the user in `response.md` at the repo root, fully
+overwriting the file each time (no appending, no history). The chat message
+should only point to the file.
 
 ## Style/scope conventions
 

@@ -1,5 +1,4 @@
 
-import json
 
 import polars as pl
 
@@ -87,7 +86,7 @@ for position, pos_results in results["by_position"].items():
 
     calib = pos_results["calibration"]["by_tier"]
     print("  calibration (MAE by confidence tier):")
-    for tier in ["high", "medium", "low"]:
+    for tier in ["high", "medium", "low", "insufficient_data"]:
         t = calib[tier]
         print(f"    {tier:8s} MAE={_fmt(t['mae'])}  n={t['n']}")
     print(f"  monotonic_decreasing_mae: {pos_results['calibration']['monotonic_decreasing_mae']}")
@@ -95,7 +94,7 @@ for position, pos_results in results["by_position"].items():
 
 print("--- overall calibration (all positions combined) ---")
 overall_calib = results["calibration_overall"]["by_tier"]
-for tier in ["high", "medium", "low"]:
+for tier in ["high", "medium", "low", "insufficient_data"]:
     t = overall_calib[tier]
     print(f"  {tier:8s} MAE={_fmt(t['mae'])}  n={t['n']}")
 print(f"  monotonic_decreasing_mae: {results['calibration_overall']['monotonic_decreasing_mae']}")

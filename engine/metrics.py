@@ -3,9 +3,10 @@ import polars as pl
 
 
 POSITIONS = ["QB", "RB", "WR", "TE"]
-CONFIDENCE_TIERS = ["high", "medium", "low"]  # insufficient_data excluded: by
-# construction (games_this_season == 0 => rolling window unfilled), it never
-# has a non-null projection, so it never has a scoreable row.
+# Ordered highest -> lowest confidence. insufficient_data (0 games this season)
+# CAN have a non-null projection: returning veterans get last season's average,
+# so it is scored like any other tier. Only true rookies have a null projection.
+CONFIDENCE_TIERS = ["high", "medium", "low", "insufficient_data"]
 
 
 def _regression_metrics(df: pl.DataFrame, error_col: str) -> dict:
@@ -57,9 +58,10 @@ def _calibration(df: pl.DataFrame) -> dict:
         )
         by_tier[tier] = _regression_metrics(sub, "error")
 
-    maes = [by_tier[t]["mae"] for t in CONFIDENCE_TIERS]  # [high, medium, low]
+    maes = [by_tier[t]["mae"] for t in CONFIDENCE_TIERS]
     monotonic_decreasing_mae = (
-        all(m is not None for m in maes) and maes[0] <= maes[1] <= maes[2]
+        all(m is not None for m in maes)
+        and all(a <= b for a, b in zip(maes, maes[1:]))
     )
 
     return {

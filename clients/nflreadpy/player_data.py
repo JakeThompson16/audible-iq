@@ -1,6 +1,7 @@
 
 import nflreadpy as nfl
 import polars as pl
+from polars import Series
 
 from config import PLAYER_METADATA
 
@@ -28,7 +29,7 @@ GAME_ID_COLUMNS = [
 ]
 
 
-def _load_player_metadata(cutoff: int = 2023) -> pl.DataFrame:
+def load_player_metadata(cutoff: int = 2023) -> pl.DataFrame:
     """Returns nfl player metadata, players who have played at least one game since cutoff"""
 
     ff_ids = nfl.load_ff_playerids()
@@ -43,6 +44,37 @@ def _load_player_metadata(cutoff: int = 2023) -> pl.DataFrame:
         how='inner'
     )
     return df.select(PLAYER_METADATA)
+
+
+def get_positional_ids(
+        seasons: int | list[int]) -> tuple[Series, Series, Series, Series]:
+    """
+    :param seasons: Season's to get positional ids for
+    :return: qbs, rbs, wrs, tes
+    """
+
+    if isinstance(seasons, int):
+        seasons = [seasons]
+
+    metadata = load_player_metadata(min(seasons) - 1)
+
+    qbs = metadata.filter(
+        pl.col('position') == 'QB'
+    ).get_column('gsis_id')
+
+    rbs = metadata.filter(
+        pl.col('position') == 'RB'
+    ).get_column('gsis_id')
+
+    wrs = metadata.filter(
+        pl.col('position') == 'WR'
+    ).get_column('gsis_id')
+
+    tes = metadata.filter(
+        pl.col('position') == 'TE'
+    ).get_column('gsis_id')
+
+    return qbs, rbs, wrs, tes
 
 
 def _build_stats(df: pl.DataFrame) -> pl.DataFrame:
@@ -143,7 +175,7 @@ def load_player_stats(seasons: int | list[int]) -> pl.DataFrame:
     if isinstance(seasons, int):
         seasons = [seasons]
 
-    metadata_df = _load_player_metadata(min(seasons) - 1)
+    metadata_df = load_player_metadata(min(seasons) - 1)
     stats_df = nfl.load_player_stats(seasons)
 
     df = stats_df.join(
@@ -164,3 +196,16 @@ def load_player_stats(seasons: int | list[int]) -> pl.DataFrame:
         RAW_STAT_COLUMNS +
         PROCESSED_STAT_COLUMNS
     )
+
+
+def get_snap_counts(seasons: int | list[int]) -> pl.DataFrame:
+    """
+    :param seasons: Seasons to get snap counts from
+    :return: snap counts DataFrame
+    """
+    if isinstance(seasons, int):
+        seasons = [seasons]
+
+    df = nfl.load_player_stats(seasons)
+
+    return df

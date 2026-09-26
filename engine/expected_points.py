@@ -51,6 +51,9 @@ def calculate_expected_points(stats_df: pl.DataFrame, skew_df: pl.DataFrame) -> 
         how="left",
     )
 
+    assert df.height == stats_df.height, \
+        f"join fan-out: {df.height} rows vs {stats_df.height} stats rows"
+
     df = df.with_columns(
         pl.col("opponent_skew").fill_null(0.0)
     )

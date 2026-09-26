@@ -71,6 +71,28 @@ If the pre-shrinkage problem had been low-sample noise, the delta should be larg
 
 **Takeaway**: treat `opponent_skew` as reliable for QB. For RB/WR/TE it's now harmless rather than genuinely helpful — worth leaving enabled (it doesn't hurt) but revisiting with finer-grained matchup features rather than trusting it as a meaningful signal.
 
+## QB rush-attempt weight
+
+Learned with `qb_rush_weight.py`: OLS of QB weekly fantasy points on pass attempts and rush attempts (2023-25, QB player-weeks with 10+ attempts, n=1,779, league scoring settings), weight = rush coefficient / pass coefficient.
+
+| | Points per attempt | Weight (pass attempt = 1.0) |
+|---|---:|---:|
+| Pass attempt | 0.402 | 1.00 |
+| Rush attempt | 0.942 | **2.34** (95% bootstrap CI 1.95-2.78) |
+
+By season: 2023 1.96, 2024 2.69, 2025 2.31. Without an intercept: 2.14. R² of the two-variable fit is 0.21.
+
+Re-run on standard PPR scoring (nflreadpy's `fantasy_points_ppr`, same 1,779 QB-weeks):
+
+| | Points per attempt | Weight (pass attempt = 1.0) |
+|---|---:|---:|
+| Pass attempt | 0.320 | 1.00 |
+| Rush attempt | 0.952 | **2.98** (95% bootstrap CI 2.52-3.49) |
+
+By season: 2023 2.48, 2024 3.47, 2025 2.90. Without an intercept: 2.71. R² 0.24. The rush yield is nearly identical across scoring systems (0.94 vs 0.95 points per rush); the difference comes from pass attempts being worth less under standard PPR (0.32 vs 0.40), so the weight is sensitive to how the league scores passing.
+
+Limits: the weight is the average scoring yield per attempt under this league's scoring, so it changes with scoring settings (e.g. pass TD value). It is descriptive (same-week), not a causal or predictive weight, and it is not yet used in the pipeline; QB skew still filters on `trailing_attempts_avg` only.
+
 ## Tech
 
 Python, Polars, Sleeper API, nflreadpy (nflverse)
