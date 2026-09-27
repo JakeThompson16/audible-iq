@@ -75,7 +75,7 @@ POSITION_IMPLEMENTATIONS: dict[str, str] = {
     "QB": "rolling_plus_skew",
     "RB": "stat_vector",
     "WR": "stat_vector",
-    "TE": "rolling_plus_skew",
+    "TE": "stat_vector",
 }
 DEFAULT_IMPLEMENTATION = "rolling_plus_skew"
 

@@ -27,7 +27,21 @@ HISTORY_SEASON = 2018
 FULL_SEASONS = list(range(2019, 2026))
 PARTIAL_SEASON = 2026
 LOAD_SEASONS = [HISTORY_SEASON] + FULL_SEASONS + [PARTIAL_SEASON]
-WINDOW = 8  # stat-vector feature window (rolling_avg_prior uses POSITION_ROLLING_WINDOWS)
+# Stat-vector feature windows live on each StatVectorSpec; rolling_avg_prior
+# uses POSITION_ROLLING_WINDOWS.
+STAT_VECTOR_WINDOW_GRID = [8, 10, 12, 14, 16, 20]
+
+
+def select_by_policy(summaries: dict) -> object:
+    """
+    Model-selection policy (CLAUDE.md "Selection policy"): rank by mean
+    Spearman, then mean R² (ties = within 0.001), then lower mean MAE.
+    summaries: key -> {"spearman", "r2", "mae"} (LOSO means). Returns the key.
+    """
+    def rank(item):
+        _, m = item
+        return (round(m["spearman"], 3), round(m["r2"], 3), -m["mae"])
+    return max(summaries.items(), key=rank)[0]
 
 PBP_COLUMNS = ["season", "week", "defteam", "play_type", "sack", "epa",
                "yardline_100", "rushing_yards", "air_yards"]
@@ -82,10 +96,11 @@ def predict_fold(
         test_season: int,
         position_implementations: dict[str, str] | None = None,
         specs: dict[str, StatVectorSpec] = STAT_VECTOR_SPECS,
-        window: int = WINDOW) -> tuple[pl.DataFrame, dict]:
+        window: int | None = None) -> tuple[pl.DataFrame, dict]:
     """
     Fit a stat-vector model on train_seasons for every position mapped to
     'stat_vector', run the engine, return (test-season predictions, models).
+    window: None -> each spec's own window.
     """
     impls = {**POSITION_IMPLEMENTATIONS, **(position_implementations or {})}
     models = {

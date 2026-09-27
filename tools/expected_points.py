@@ -21,8 +21,9 @@ _METHOD_EXPLANATIONS = {
     ),
     "stat_vector": lambda r: (
         f"projection = this league's scoring applied to a predicted stat line "
-        f"(stat vector: predicted carries/targets from recent usage, times "
-        f"per-attempt rates adjusted for {r['opponent_team']}'s EPA allowed). "
+        f"(stat vector: predicted volume — pass attempts, targets, carries — from "
+        f"recent usage, times per-attempt rates adjusted for {r['opponent_team']}'s "
+        f"EPA allowed). "
         f"opponent_skew is not part of this projection."
     ),
 }

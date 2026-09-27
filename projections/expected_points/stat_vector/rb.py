@@ -1,5 +1,5 @@
 
-from projections.expected_points.stat_vector.core import StatVectorSpec
+from projections.expected_points.stat_vector.core import StatVectorSpec, rush_receive_derivations
 
 
 # RB stat vector (validated 2026-09-27, LOSO 2019-2025; see README).
@@ -19,5 +19,6 @@ RB_SPEC = StatVectorSpec(
         "ypr":          (["roll_ypr", "delta_targets", "epa_allowed_pass"], "receptions"),
         "rec_td_rate":  (["roll_rec_td_rate", "delta_targets", "epa_allowed_pass"], "receptions"),
     },
-    reception_bonus_col="rb_receptions",
+    derivations=rush_receive_derivations("rb_receptions"),
+    window=8,
 )

@@ -4,15 +4,20 @@ import polars as pl
 from projections.rolling_window import trailing_count, trailing_mean, trailing_sum
 
 
-VOLUME_STATS = ["carries", "targets"]
+VOLUME_STATS = ["carries", "targets", "attempts"]
 
-# rate name -> (numerator stat, denominator stat)
+# rate name -> (numerator stat, denominator stat). Passing yards and TDs accrue
+# on completions; interceptions are per attempt (an INT is never a completion).
 RATE_STATS = {
     "ypc": ("rushing_yards", "carries"),
     "rush_td_rate": ("rushing_tds", "carries"),
     "catch_rate": ("receptions", "targets"),
     "ypr": ("receiving_yards", "receptions"),
     "rec_td_rate": ("receiving_tds", "receptions"),
+    "completion_rate": ("completions", "attempts"),
+    "yards_per_completion": ("passing_yards", "completions"),
+    "pass_td_rate": ("passing_tds", "completions"),
+    "int_rate": ("passing_interceptions", "attempts"),
 }
 
 DELTA_SHORT = 3
@@ -24,7 +29,7 @@ def add_stat_rolling_features(stats_df: pl.DataFrame, window: int = 8) -> pl.Dat
     :param stats_df: player-week stats (load_player_stats output)
     :param window: trailing games for the per-stat rolling features
     :return: stats_df with, per stat:
-        roll_<volume>          trailing mean of carries / targets
+        roll_<volume>          trailing mean of carries / targets / attempts
         roll_<rate>            trailing rate as a ratio of rolling sums
         delta_<volume>         trailing DELTA_SHORT-game mean minus DELTA_LONG-game mean
         stat_games_in_window   games backing the roll_* values

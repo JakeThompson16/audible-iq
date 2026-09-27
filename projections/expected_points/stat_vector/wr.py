@@ -1,5 +1,5 @@
 
-from projections.expected_points.stat_vector.core import StatVectorSpec
+from projections.expected_points.stat_vector.core import StatVectorSpec, rush_receive_derivations
 
 
 # WR stat vector (LOSO 2019-2025, see README). Same structure as RB: targets is
@@ -22,7 +22,8 @@ WR_SPEC = StatVectorSpec(
         "ypc":          (["roll_ypc", "delta_carries", "epa_allowed_rush"], "carries"),
         "rush_td_rate": (["roll_rush_td_rate", "delta_carries", "epa_allowed_rush"], "carries"),
     },
-    reception_bonus_col="wr_receptions",
+    derivations=rush_receive_derivations("wr_receptions"),
+    window=8,
     candidate_terms={
         "targets": ["epa_allowed_pass"],
         "ypr": ["epa_allowed_pass"],

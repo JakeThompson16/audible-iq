@@ -61,15 +61,18 @@ Layered to isolate external API/data-source dependencies from core logic:
   - `core.py` — shared machinery: `StatVectorSpec` (per-position model
     spec), OLS/WLS fitting, `fit_stat_vector()` (offline fit ->
     `StatVectorModel`), `StatVectorModel.predict_points()`.
-  - `rb.py` — `RB_SPEC`, `wr.py` — `WR_SPEC` (both validated, in
-    production). `specs.py` — `STAT_VECTOR_SPECS`. A spec's
+  - `rb.py`, `wr.py`, `te.py` — validated specs, in production. `qb.py` —
+    evaluated, NOT switched on (Q-14). `specs.py` — `STAT_VECTOR_SPECS`.
+    Each spec carries its own feature `window` and a `derivations` chain
+    (`rush_receive_derivations(...)` for RB/WR/TE, `PASS_RUSH_DERIVATIONS`
+    for QB) that turns predicted volumes x rates into the stat line. A spec's
     `candidate_terms` are evaluated-but-off features, re-testable with
     `stat_vector_eval.py <POS> --candidates`.
 - `engine/expected_points.py` — `calculate_expected_points(stats_df,
   context, position_implementations=None)`. Joins opponent skew for every
   row (week/season/opponent_team/position), then dispatches each position to
   an implementation via `POSITION_IMPLEMENTATIONS` (see "Swappable
-  implementations" below): RB/WR -> `stat_vector`, QB/TE ->
+  implementations" below): RB/WR/TE -> `stat_vector`, QB ->
   `rolling_plus_skew`. Adds `projection`, `projection_method`, and a
   `confidence` tier per row. `ExpectedPointsContext` carries skew_df,
   epa_df, scoring, fitted stat-vector models (fitting happens offline), and
@@ -110,9 +113,9 @@ Layered to isolate external API/data-source dependencies from core logic:
 
 ## Key design decisions (with rationale — don't relitigate without reason)
 
-**Projection formula (per position)**: QB/TE use
+**Projection formula (per position)**: QB uses
 `projection = rolling_avg_prior + opponent_skew`, deliberately simple and
-unfitted. RB and WR use the stat vector (fitted OLS volume + attempt-weighted rate
+unfitted. RB, WR and TE use the stat vector (fitted OLS volume + attempt-weighted rate
 models, recomposed through league scoring). Adopting fitted coefficients for
 RB was an explicit decision on 2026-09-27 (Q-11b), made because the stat vector
 beat the incumbent on held-out seasons AND is league-portable. The original
@@ -210,6 +213,24 @@ p >= 0.48) and in ypr / rec_td_rate (significant in <= 1 of 7 folds); they are
 `candidate_terms`. Rushing-side WR rates keep `epa_allowed_rush` as
 specified but carry no signal (WR carries are tiny).
 
+**TE stat vector** (`stat_vector/te.py`, switched on 2026-09-27): WR's
+structure refit on TE data, window 10. Validated matchup findings on TE:
+`epa_allowed_pass` on ypr (+3.7 to +5.7) and rec_td_rate (+0.10 to +0.13)
+positive and significant in 7/7 folds, which is unlike WR, where neither
+cleared. On catch_rate it's positive 7/7 and significant 5/7. Off (candidate):
+targets volume EPA, positive 7/7 but significant only 3/7.
+
+**QB stat vector** (`stat_vector/qb.py`, evaluated, NOT switched on): volume
+= pass attempts + rush attempts (scrambles included via play_type == 'run');
+rates completion_rate / int_rate per attempt, yards_per_completion /
+pass_td_rate per completion, ypc / rush_td_rate per rush attempt; completions,
+incompletions, yards, TDs and INTs derived by multiplication. **int_rate's
+epa_allowed_pass coefficient is NEGATIVE by design** (a softer pass defense
+forces fewer interceptions): -0.027 to -0.034, significant in 7/7 folds. That
+is the expected, correct sign; don't "fix" it. Completion rate (+, 7/7),
+yards/completion and pass TD rate (+, 6/7) are the other validated passing
+terms; rushing EPA terms and volume-model EPA were not significant.
+
 **Stat-vector rate models are attempt-weighted by default** (`fit_models(weight_rates=True)`).
 Unweighted fits under-project RB by +0.31 pts/game on average (LOSO bias);
 weighted bias is −0.03, at a cost of +0.046 MAE. Replacing fitted rates with
@@ -219,6 +240,21 @@ MAE, season-to-date rates +0.09 MAE); both variants were removed from the code
 is defined (denominator > 0). A player with history but no attempts of a kind in
 the window gets the pooled training rate for that `roll_<rate>`. Rookies with no
 history stay None.
+
+**Selection policy (stated rule, 2026-09-27)**: start/sit is a pairwise
+ranking decision, so model and parameter choices prioritize mean LOSO
+**Spearman, then R²**, with MAE as a guardrail rather than the target.
+- Switching a position's implementation: adopt the candidate if Spearman and
+  R² are comparable-or-better AND MAE is comparable-or-better. A strict MAE
+  win is not required (WR's switch was the first case: best R²/Spearman,
+  MAE won 3/7 folds but lowest mean).
+- Parameter grids (e.g. a stat-vector window): `evaluation.backtest.select_by_policy`
+  ranks by mean Spearman, then mean R² (ties within 0.001), then lower MAE.
+- Report MAE and bias every time; a candidate that ranks better but is
+  materially biased does not pass (boom/bust measures deviation from it).
+- The `POSITION_ROLLING_WINDOWS` grid predates this rule and was chosen on
+  MAE (QB 12, WR 10, TE 12); under this rule it would pick QB 14, WR 14,
+  TE 12. Not re-selected yet.
 
 **Swappable implementations** (`engine/expected_points.py`, VISION.md / Q-2):
 `IMPLEMENTATIONS` maps a name to a function `(rows, ExpectedPointsContext) ->
@@ -278,8 +314,8 @@ skew and epa_allowed 17 (one season of defense games, not tuned).
   formula (LOSO means 2019-2025) at a shared 8-game window: MAE worse by +0.03
   (QB), +0.06 (RB), +0.05 (WR), +0.06 (TE) vs the retired blend. After the
   per-position window tuning: QB ties the blend (7.894 vs 7.893 MAE, better R²
-  and Spearman); TE (+0.038) remains behind; WR moved to the stat vector.
-  OPEN_QUESTIONS Q-13.
+  and Spearman); WR and TE then moved to the stat vector, which beats the old
+  blend's numbers on R²/Spearman. Q-13 resolved.
 - Confidence tiers are unaffected (verified identical on all 141,434 rows).
 - True rookies with no prior games: `rolling_avg_prior`
   resolves to `None`, NOT a fabricated positional-average fallback. This is

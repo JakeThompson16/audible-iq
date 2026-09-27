@@ -46,6 +46,9 @@ Numbering is stable; don't renumber._
 ## Found in the 2026-09-24 audit
 
 ### Q-4. Are the README/CLAUDE.md skew conclusions still valid? — PARTIALLY ANSWERED: no; docs rewritten 2026-09-27, k grid still not re-run
+- **Update 2026-09-27 (QB/TE pass):** opponent_skew now only affects QB in production (RB/WR/TE are
+  on the stat vector). For QB, rolling-alone still edges rolling+skew on MAE (7.869 vs 7.895).
+  Remaining question is narrower: keep, retune k, or drop skew for QB.
 - **Update 2026-09-27:** README "Model Evaluation" now holds the final LOSO table (2019-2025,
   continuous windows). opponent_skew does not beat rolling-average-alone at any position
   (QB 7.923 vs 7.902 MAE, WR 4.706 vs 4.694, TE 4.342 vs 4.303). Still open: re-run the k grid
@@ -115,6 +118,9 @@ Numbering is stable; don't renumber._
   Vision says "highly customizable based on league settings".
 - **Resolution path:** at minimum, surface unsupported-nonzero fields as a
   warning/known-limitation per league; decide which to actually support.
+- **Extension 2026-09-27 (QB spec, not in production):** the QB stat line also omits passing 2-pt
+  (`pass_2pt`), first downs (`pass_fd`), sacks (`pass_sack`), 300/400-yard and 25-completion
+  bonuses, and fumbles. For the tested league (pass_2pt 2, fum_lost -2) that is mean |gap| 0.47.
 - **Extension 2026-09-26 (RB stat-vector projection, `projections/expected_points/stat_vector/rb.py`):**
   the stat vector predicts only carries, rushing yards/TDs, targets, receptions, receiving
   yards/TDs. **Not predicted, contribute 0** through the same mechanism (the column is absent,
@@ -178,7 +184,10 @@ Numbering is stable; don't renumber._
   epa_allowed now use continuous 17-game windows, so week 1 already has prior-season games
   in the window and n = games actually in the window.
 
-### Q-13. Continuous windows cost the incumbent formula accuracy — PARTIALLY RESOLVED (2026-09-27)
+### Q-13. Continuous windows cost the incumbent formula accuracy — RESOLVED (2026-09-27)
+- **Resolution:** QB ties the old blend at its tuned window (12). WR and TE are now on the stat
+  vector (TE LOSO MAE 4.233 / R² 0.326 / Spearman 0.590 vs the old blended formula's
+  4.282 / 0.301 / 0.573), so no production position carries the continuous-window cost.
 - **Update:** per-position window grid (`rolling_window_eval.py`, {8,10,12,14,16,20}, LOSO
   mean MAE) set QB 12, WR 10, TE 12 in `POSITION_ROLLING_WINDOWS`. QB now ties the old blend
   (MAE 7.894 vs 7.893) with better R² (0.216 vs 0.202) and Spearman (0.483 vs 0.473). WR
@@ -197,6 +206,30 @@ Numbering is stable; don't renumber._
 - **Resolution path:** accept (one rule everywhere), tune the player window per position, or
   move WR/TE to the stat vector (Part 2 of the same instruction starts WR). RB is unaffected
   in production because it no longer uses this formula.
+
+### Q-14. QB stat vector — EVALUATED, NOT SWITCHED (2026-09-27)
+- **Result (LOSO 2019-2025, window 12):** MAE 7.911 / R² 0.238 / Spearman 0.483, bias -0.10, vs tuned
+  rolling+skew 7.895 / 0.220 / 0.487 (bias -0.31) and rolling alone 7.869 / 0.221 / 0.480. Fold
+  wins vs current: R² 6/7, Spearman 2/7, MAE 4/7. Partial 2026 (weeks 1-4) worse. Fails the
+  Spearman-first bar narrowly; QB stays on rolling_plus_skew.
+- **Passing matchup signal is real and correctly signed** (completion rate +, INT rate −, both 7/7).
+- **Candidate refinements:** (a) split scrambles vs designed runs (one rush volume + one ypc model
+  today); unverified hint: on a 2025 week-10 sample the stat vector's top QBs were pocket passers
+  (Herbert, Nix) where rolling had Jackson/Allen, which suggests rushing QBs may be under-projected.
+  (b) predict fumbles / 2-pt: recomposing actual QB stats without them costs mean |gap| 0.47
+  points/game (mean -0.17) for the tested league, far more than RB/WR/TE (0.04-0.11).
+
+### Q-15. Confidence-tier calibration still inverted — OPEN (2026-09-27)
+- **Recheck (pooled 2019-2025 held-out predictions, final registry):** MAE by tier high / medium /
+  low / insufficient: QB 7.857 / 7.756 / 7.923 / 8.292; RB 5.093 / 4.507 / 4.430 / 4.543; WR 4.926 /
+  4.561 / 4.450 / 4.678; TE 4.690 / 4.106 / 3.881 / 3.899. `monotonic_decreasing_mae` False for every
+  position and overall. `high` has the largest MAE everywhere except QB.
+- **Likely cause:** absolute-error scale. High-tier rows are regulars with larger point totals,
+  so their absolute errors are larger even if relative accuracy is better. MAE-by-tier can't
+  validate a games-played tier.
+- **Resolution path:** calibrate on a scale-free error (MAE / mean actual, or rank error within
+  week), or redefine confidence (e.g. by n_games_in_window and projection size) before the agent
+  relies on it.
 
 ### Q-10. Long-lived carry-overs (from CLAUDE.md / README) — DEFERRED
 - Confidence-tier thresholds are provisional; calibration was non-monotonic

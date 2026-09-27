@@ -10,8 +10,8 @@ Currently implemented:
 - **League-accurate scoring engine**: computes fantasy points via a vectorized dot product of each league's actual scoring settings against raw stat lines (supports PPR variants, TE premium, yardage/completion bonus thresholds, etc.)
 - **Validated**: scoring output cross-checked against real Sleeper league data (Trey McBride, full season) with exact matches
 - **Weekly point projection engine** with a per-position implementation registry:
-  - **RB and WR**: a league-portable *stat vector* (predicted carries/targets and per-attempt rates, scored through the league's own settings).
-  - **QB/TE**: a trailing-game average (12 games) plus an opponent-adjusted matchup skew.
+  - **RB, WR and TE**: a league-portable *stat vector* (predicted carries/targets and per-attempt rates, scored through the league's own settings).
+  - **QB**: a trailing 12-game average plus an opponent-adjusted matchup skew. A QB stat vector was evaluated and narrowly didn't clear the bar.
   - Every projection gets a confidence tier.
   - See [Model Evaluation](#model-evaluation).
 
@@ -33,7 +33,7 @@ This separation means adding a new platform (e.g. ESPN, Yahoo) or data source on
 
 ## Scope
 
-Currently focused on offensive skill positions (QB/RB/WR/TE). Kicker, team defense/IDP, and play-level long-touchdown bonus categories are intentionally out of scope, see code comments for details. The RB/WR stat-vector projections also omit 2-pt conversions, first downs, fumbles, and yardage/carry threshold bonuses (they score 0).
+Currently focused on offensive skill positions (QB/RB/WR/TE). Kicker, team defense/IDP, and play-level long-touchdown bonus categories are intentionally out of scope, see code comments for details. The RB/WR/TE stat-vector projections also omit 2-pt conversions, first downs, fumbles, and yardage/carry threshold bonuses (they score 0).
 
 ## Model Evaluation
 
@@ -43,7 +43,9 @@ All numbers come from `engine/metrics.py` on a **leave-one-season-out** backtest
 - one Sleeper league's scoring;
 - every rolling feature is a continuous trailing window that spans the season boundary (per-position player windows QB 12 / RB 8 / WR 10 / TE 12, 17 games for defenses).
 
-Run `python test.py` (all positions), `python stat_vector_eval.py RB|WR`, or `python rolling_window_eval.py`.
+Run `python test.py` (all positions + calibration), `python stat_vector_eval.py RB|WR|TE|QB [--grid] [--candidates]`, or `python rolling_window_eval.py`.
+
+Selection policy: start/sit is a ranking decision, so choices prioritize mean Spearman, then R². A position switches implementation when both are comparable-or-better at comparable-or-better MAE; a strict MAE win isn't required.
 
 ### Production engine, per position (mean of 7 full-season folds)
 
@@ -52,9 +54,22 @@ Run `python test.py` (all positions), `python stat_vector_eval.py RB|WR`, or `py
 | QB | rolling_avg_prior + opponent_skew | 12 | 7.895 | 0.220 | 0.487 | 7.869 / 0.221 |
 | RB | **stat vector** | 8 | **4.717** | **0.378** | **0.686** | 4.733 / 0.349 |
 | WR | **stat vector** | 10 | **4.690** | **0.344** | **0.651** | 4.692 / 0.326 |
-| TE | rolling_avg_prior + opponent_skew | 12 | 4.318 | 0.295 | 0.570 | 4.286 / 0.301 |
+| TE | **stat vector** | 10 (stat-vector) | **4.233** | **0.326** | **0.590** | 4.286 / 0.301 |
 
-On corrected data, opponent_skew doesn't beat rolling-average-alone at any position (OPEN_QUESTIONS Q-4). The confidence-tier calibration is still non-monotonic.
+The Window column is the rolling-average window, except for TE, where it's the stat vector's own feature window. RB and WR stat vectors use 8.
+
+On corrected data, opponent_skew doesn't beat rolling-average-alone at any position; it now only feeds QB (OPEN_QUESTIONS Q-4).
+
+**Confidence calibration** (MAE by tier, pooled held-out 2019-2025, high / medium / low / insufficient):
+
+| Pos | MAE by tier |
+|---|---|
+| QB | 7.857 / 7.756 / 7.923 / 8.292 |
+| RB | 5.093 / 4.507 / 4.430 / 4.543 |
+| WR | 4.926 / 4.561 / 4.450 / 4.678 |
+| TE | 4.690 / 4.106 / 3.881 / 3.899 |
+
+It's still not monotonic anywhere, most likely because absolute error scales with a player's usage (Q-15).
 
 ### Rolling window length (per position)
 
@@ -103,7 +118,7 @@ Earlier iterations tested and rejected: unweighted rate fits (under-project by 0
 
 Known limitations:
 - 2-pt conversions, first downs, fumbles, and 100/200-yard / 20-carry bonuses are not predicted and score 0 (about 0.11 points/game on actual RB stats for the tested league).
-- RB and WR only; QB/TE still use the rolling formula.
+- RB, WR and TE; QB stays on the rolling formula (Q-14).
 - This is a backtest-validated path; there is no live upcoming-week projection path yet.
 
 ### WR: stat vector vs current formula vs rolling alone
@@ -129,6 +144,57 @@ How the stat vector compares over the 7 folds:
 - mean bias +0.03 (current formula +0.04, rolling alone −0.17).
 
 Coefficients are stable across folds (targets trailing average 0.872-0.876; catch rate × `epa_allowed_pass` +0.16 to +0.24, significant in every fold). `epa_allowed` in the targets model and in yards/reception and TD rate was tested and left off (not significant or unstable sign).
+
+### TE: stat vector vs current formula vs rolling alone
+
+WR's structure refit on TE data. The stat-vector window is 10, picked by the selection policy from {8, 10, 12, 14, 16, 20}. `epa_allowed_pass` is on for catch rate, yards/reception and TD rate; the last two cleared significance for TE though not for WR. Baselines use the tuned TE window (12). Each cell is MAE / R² / Spearman.
+
+| Test season | Stat vector | rolling_avg_prior + opponent_skew | Rolling alone |
+|---|---|---|---|
+| 2019 | **4.292** / **0.302** / **0.547** | 4.401 / 0.251 / 0.531 | 4.343 / 0.261 / 0.543 |
+| 2020 | **4.539** / **0.283** / **0.544** | 4.633 / 0.256 / 0.536 | 4.580 / 0.267 / 0.542 |
+| 2021 | **4.186** / **0.332** / **0.541** | 4.247 / 0.314 / 0.530 | 4.225 / 0.315 / 0.530 |
+| 2022 | **4.156** / **0.318** / **0.606** | 4.248 / 0.284 / 0.564 | 4.226 / 0.290 / 0.578 |
+| 2023 | **4.084** / **0.369** / **0.639** | 4.179 / 0.326 / 0.612 | 4.180 / 0.334 / 0.617 |
+| 2024 | 4.256 / **0.336** / **0.632** | 4.274 / 0.320 / 0.610 | **4.254** / 0.326 / 0.620 |
+| 2025 | **4.117** / **0.341** / **0.621** | 4.244 / 0.316 / 0.606 | 4.197 / 0.314 / 0.611 |
+| **Mean (7 folds)** | **4.233** / **0.326** / **0.590** | 4.318 / 0.295 / 0.570 | 4.286 / 0.301 / 0.577 |
+| 2026 wk 1-4 (189 rows) | **4.539** / 0.246 / 0.561 | 4.587 / **0.260** / **0.576** | 4.573 / 0.242 / 0.564 |
+
+How the stat vector compares over the 7 folds:
+- vs the current formula: better on all three metrics in all 7 folds;
+- vs rolling alone: better R² and Spearman in 7, MAE in 6;
+- mean bias +0.02.
+
+Coefficients are stable across folds (targets trailing average 0.870-0.885; yards/reception × `epa_allowed_pass` +3.7 to +5.7 and TD rate × `epa_allowed_pass` +0.10 to +0.13, both significant in every fold).
+
+### QB: stat vector evaluated, not switched
+
+The QB model has its own spec:
+- **Volume models:** pass attempts and rush attempts (scrambles included).
+- **Rate models:** completion rate and INT rate per attempt; yards and TDs per completion; yards and TDs per rush attempt.
+- **Stat window:** 12.
+
+Each cell is MAE / R² / Spearman.
+
+| Test season | Stat vector | rolling_avg_prior + opponent_skew (w=12) | Rolling alone |
+|---|---|---|---|
+| 2019 | **8.063** / **0.191** / 0.424 | 8.166 / 0.156 / 0.424 | 8.197 / 0.146 / 0.396 |
+| 2020 | 8.129 / 0.275 / 0.519 | 7.869 / 0.299 / 0.542 | **7.825** / **0.304** / **0.543** |
+| 2021 | 8.089 / 0.247 / 0.498 | 7.938 / 0.237 / **0.528** | **7.850** / **0.251** / 0.524 |
+| 2022 | **7.257** / **0.258** / 0.502 | 7.324 / 0.234 / **0.518** | 7.358 / 0.227 / 0.509 |
+| 2023 | 7.641 / **0.226** / 0.487 | 7.623 / 0.218 / **0.492** | **7.571** / 0.220 / 0.485 |
+| 2024 | 7.917 / **0.260** / **0.517** | 7.929 / 0.238 / 0.496 | **7.874** / 0.244 / 0.498 |
+| 2025 | **8.279** / **0.207** / **0.437** | 8.416 / 0.155 / 0.412 | 8.410 / 0.152 / 0.405 |
+| **Mean (7 folds)** | 7.911 / **0.238** / 0.483 | 7.895 / 0.220 / **0.487** | **7.869** / 0.221 / 0.480 |
+| 2026 wk 1-4 (96 rows) | 8.575 / 0.152 / 0.305 | **8.284** / 0.162 / **0.317** | 8.291 / **0.165** / 0.316 |
+
+- Better R² in 6 of 7 folds and smaller bias (−0.10 vs −0.31).
+- Spearman, the primary metric, is slightly worse (wins 2 of 7 folds), MAE is +0.016, and the early-season fold is worse. So QB stays on rolling_avg_prior + opponent_skew (OPEN_QUESTIONS Q-14).
+- The passing matchup terms are real and correctly signed: completion rate rises against weak pass defenses, and **interception rate falls** (a negative coefficient, significant in every fold, as expected).
+- Candidate refinements:
+  - split scrambles from designed runs;
+  - predict fumbles and 2-pt conversions, which currently cost QBs 0.47 points/game in recomposition.
 
 ### Continuous windows vs the old season blend
 

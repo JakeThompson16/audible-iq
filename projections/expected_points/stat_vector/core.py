@@ -15,24 +15,61 @@ from projections.expected_points.features.stat_rolling import RATE_STATS, add_st
 # score it with the unmodified calculate_points_vectorized. Fantasy points are
 # never predicted directly — that would lock the model to one league's scoring.
 #
-# Position-specific pieces (which features feed which model, which
-# reception-bonus column applies) live in a StatVectorSpec per position
-# (rb.py, ...); everything else here is shared.
+# Position-specific pieces (which features feed which model, how the stat
+# line is derived from volumes and rates, the feature window) live in a
+# StatVectorSpec per position (rb.py, wr.py, te.py, qb.py); everything else
+# here is shared.
 
 KEY_COLUMNS = ["gsis_id", "season", "week", "position"]
+
+
+# Rates bounded to [0, 1], and rates that can't be negative. Volumes are
+# floored at 0 too. Yardage rates are left unclipped (negative ypc is real).
+PROBABILITY_RATES = {"catch_rate", "completion_rate"}
+NONNEGATIVE_RATES = {"rush_td_rate", "rec_td_rate", "pass_td_rate", "int_rate"}
+
+
+def rush_receive_derivations(reception_bonus_col: str) -> tuple:
+    """Derivation chain for RB/WR/TE: rushing + receiving stat lines."""
+    return (
+        ("rushing_yards", "carries", "*", "ypc"),
+        ("rushing_tds", "carries", "*", "rush_td_rate"),
+        ("receptions", "targets", "*", "catch_rate"),
+        (reception_bonus_col, "receptions", "=", None),
+        ("receiving_yards", "receptions", "*", "ypr"),
+        ("receiving_tds", "receptions", "*", "rec_td_rate"),
+    )
+
+
+# QB: yards and TDs accrue on completions, interceptions on attempts.
+PASS_RUSH_DERIVATIONS = (
+    ("completions", "attempts", "*", "completion_rate"),
+    ("passing_inc", "attempts", "-", "completions"),
+    ("passing_yards", "completions", "*", "yards_per_completion"),
+    ("passing_tds", "completions", "*", "pass_td_rate"),
+    ("passing_interceptions", "attempts", "*", "int_rate"),
+    ("rushing_yards", "carries", "*", "ypc"),
+    ("rushing_tds", "carries", "*", "rush_td_rate"),
+)
 
 
 @dataclass(frozen=True)
 class StatVectorSpec:
     position: str
-    # target -> (features, denominator the target is a rate over, or None for volume)
+    # target -> (features, denominator the target is a rate over, or None for volume).
+    # Volume target names are stat column names (carries, targets, attempts).
     models: dict
-    # ScoringSettings per-position reception bonus column (rb_/wr_/te_receptions)
-    reception_bonus_col: str
+    # Ordered (output stat, left, op, right): "*" -> left * pred_<right rate>,
+    # "-" -> left - right, "=" -> copy of left. `left`/`right` are volume
+    # stats or earlier outputs. Multiplied, never fitted.
+    derivations: tuple
     # target -> extra features that were evaluated but are OFF by default
     # (not validated: unstable sign or not significant across folds). Kept so
     # they can be re-tested on more data: spec.with_candidates().
     candidate_terms: dict = field(default_factory=dict)
+    # Trailing window (games) for this position's stat-vector features,
+    # chosen per position (README).
+    window: int = 8
 
     def with_candidates(self) -> "StatVectorSpec":
         """This spec with every candidate term switched on (for re-testing only)."""
@@ -53,11 +90,10 @@ class StatVectorSpec:
     @property
     def recomposed_columns(self) -> list[str]:
         # Anything calculate_points_vectorized maps that is NOT here (2-pt
-        # conversions, first downs, fumbles_lost, 100/200-yard and 20-carry
-        # bonuses) is absent from the scored frame and contributes 0 — see
-        # OPEN_QUESTIONS.md Q-8.
-        return ["carries", "rushing_yards", "rushing_tds", "targets", "receptions",
-                self.reception_bonus_col, "receiving_yards", "receiving_tds"]
+        # conversions, first downs, fumbles_lost, sacks, yardage/carry/
+        # completion threshold bonuses) is absent from the scored frame and
+        # contributes 0 — see OPEN_QUESTIONS.md Q-8.
+        return self.volume_targets + [out for out, *_ in self.derivations]
 
 
 @dataclass
@@ -136,10 +172,11 @@ def vif(df: pl.DataFrame, features: list[str]) -> dict[str, float]:
 
 def rate_priors(train_df: pl.DataFrame) -> dict[str, float]:
     """Pooled rate per rate stat over the training rows: sum(num) / sum(den)."""
-    return {
-        rate: train_df[num].sum() / train_df[den].sum()
-        for rate, (num, den) in RATE_STATS.items()
-    }
+    priors = {}
+    for rate, (num, den) in RATE_STATS.items():
+        den_sum = train_df[den].sum()
+        priors[rate] = train_df[num].sum() / den_sum if den_sum else None
+    return priors
 
 
 def apply_rate_priors(df: pl.DataFrame, priors: dict[str, float]) -> pl.DataFrame:
@@ -211,31 +248,34 @@ class StatVectorModel:
             feature is null (no history -> no projection).
         """
         spec = self.spec
+        preds = [f"pred_{t}" for t in spec.models]
         df = apply_rate_priors(features, self.priors)
         df = df.with_columns([self.fits[t].predict(df).alias(f"pred_{t}") for t in spec.models])
 
         # Keep predictions physically possible. clip(lower_bound, upper_bound).
-        df = df.with_columns(
-            pl.col("pred_carries").clip(lower_bound=0.0),
-            pl.col("pred_targets").clip(lower_bound=0.0),
-            pl.col("pred_rush_td_rate").clip(lower_bound=0.0),
-            pl.col("pred_rec_td_rate").clip(lower_bound=0.0),
-            pl.col("pred_catch_rate").clip(lower_bound=0.0, upper_bound=1.0),
-        ).select(KEY_COLUMNS + [f"pred_{t}" for t in spec.models])
+        clips = []
+        for t in spec.models:
+            if t in PROBABILITY_RATES:
+                clips.append(pl.col(f"pred_{t}").clip(lower_bound=0.0, upper_bound=1.0))
+            elif t in NONNEGATIVE_RATES or t in spec.volume_targets:
+                clips.append(pl.col(f"pred_{t}").clip(lower_bound=0.0))
+        df = df.with_columns(clips).select(KEY_COLUMNS + preds)
 
-        df = df.with_columns(
-            pl.col("pred_carries").alias("carries"),
-            (pl.col("pred_carries") * pl.col("pred_ypc")).alias("rushing_yards"),
-            (pl.col("pred_carries") * pl.col("pred_rush_td_rate")).alias("rushing_tds"),
-            pl.col("pred_targets").alias("targets"),
-            (pl.col("pred_targets") * pl.col("pred_catch_rate")).alias("receptions"),
-        ).with_columns(
-            pl.col("receptions").alias(spec.reception_bonus_col),
-            (pl.col("receptions") * pl.col("pred_ypr")).alias("receiving_yards"),
-            (pl.col("receptions") * pl.col("pred_rec_td_rate")).alias("receiving_tds"),
-        )
+        # Volume predictions become the stat columns, then the derivation chain
+        # runs in order (each step may use an earlier output).
+        df = df.with_columns([pl.col(f"pred_{v}").alias(v) for v in spec.volume_targets])
+        for out, left, op, right in spec.derivations:
+            if op == "*":
+                expr = pl.col(left) * pl.col(f"pred_{right}")
+            elif op == "-":
+                expr = pl.col(left) - pl.col(right)
+            elif op == "=":
+                expr = pl.col(left)
+            else:
+                raise ValueError(f"unknown derivation op {op!r} for {out}")
+            df = df.with_columns(expr.alias(out))
 
-        return df.select(KEY_COLUMNS + [f"pred_{t}" for t in spec.models] + spec.recomposed_columns)
+        return df.select(KEY_COLUMNS + preds + spec.recomposed_columns)
 
     def predict_points(self, rows: pl.DataFrame, epa_df: pl.DataFrame, scoring: ScoringSettings) -> pl.DataFrame:
         """
@@ -253,13 +293,15 @@ def fit_stat_vector(
         epa_df: pl.DataFrame,
         spec: StatVectorSpec,
         train_seasons: list[int],
-        window: int = 8,
+        window: int | None = None,
         weight_rates: bool = True) -> StatVectorModel:
     """
     :param rows: this position's player-week rows (all loaded seasons)
     :param train_seasons: seasons whose rows the models are fit on
+    :param window: stat-vector feature window; None -> spec.window
     Offline step: the engine only consumes the returned StatVectorModel.
     """
+    window = spec.window if window is None else window
     features = build_features(rows.filter(pl.col("position") == spec.position), epa_df, window)
     train = features.filter(pl.col("season").is_in(train_seasons))
     priors = rate_priors(train)

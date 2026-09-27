@@ -35,8 +35,11 @@ def _fmt(x):
 
 inputs = load_inputs(scoring_settings)
 
+full_fold_preds = []
 for label, train, test in loso_folds():
     preds, _ = predict_fold(inputs, train, test)
+    if "partial" not in label:
+        full_fold_preds.append(preds)
     results = evaluate_projections(preds, inputs.stats)
 
     print(f"===== test season {label} (stat-vector models fit on {', '.join(map(str, train))}) =====")
@@ -54,3 +57,15 @@ for label, train, test in loso_folds():
         f"{t}={_fmt(calib[t]['mae'])} (n={calib[t]['n']})" for t in calib))
     print(f"  meta: {results['meta']['n_scored']} scored, "
           f"{results['meta']['n_null_projection_dropped']} null projections dropped\n")
+
+# Confidence-tier calibration pooled over all full-season folds (each season's
+# predictions come from its own held-out fold). Tiers derive from
+# games_this_season only; MAE should fall high < medium < low.
+pooled = evaluate_projections(pl.concat(full_fold_preds, how="diagonal_relaxed"), inputs.stats)
+print("===== confidence calibration, pooled 2019-2025 held-out predictions =====")
+for position in POSITIONS + ["ALL"]:
+    calib = pooled["calibration_overall"] if position == "ALL" else pooled["by_position"][position]["calibration"]
+    tiers = calib["by_tier"]
+    print(f"  {position:3s} " + "  ".join(
+        f"{t}={_fmt(tiers[t]['mae'])} (n={tiers[t]['n']})" for t in tiers)
+        + f"  monotonic_decreasing_mae={calib['monotonic_decreasing_mae']}")
