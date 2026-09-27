@@ -1,6 +1,8 @@
 
 import polars as pl
 
+from projections.rolling_window import trailing_count, trailing_mean, trailing_sum
+
 
 VOLUME_STATS = ["carries", "targets"]
 
@@ -22,20 +24,16 @@ def add_stat_rolling_features(stats_df: pl.DataFrame, window: int = 8) -> pl.Dat
     :param stats_df: player-week stats (load_player_stats output)
     :param window: trailing games for the per-stat rolling features
     :return: stats_df with, per stat:
-        roll_<volume>        trailing mean of carries / targets
-        roll_<rate>          trailing rate as a ratio of rolling sums
-        delta_<volume>       trailing DELTA_SHORT-game mean minus DELTA_LONG-game mean
-        std_<rate>           player's season-to-date rate (sum/sum over this
-                             season's prior games; resets each season, null
-                             until the denominator is > 0)
-        <rate>               this game's realized rate (the rate models' target;
-                             null when the denominator is 0)
+        roll_<volume>          trailing mean of carries / targets
+        roll_<rate>            trailing rate as a ratio of rolling sums
+        delta_<volume>         trailing DELTA_SHORT-game mean minus DELTA_LONG-game mean
+        stat_games_in_window   games backing the roll_* values
+        <rate>                 this game's realized rate (the rate models' target;
+                               null when the denominator is 0)
 
-    Every trailing feature uses .shift(1) first, so week W only sees games
-    before W. Partitioned by gsis_id only, NOT (gsis_id, season): the window
-    rolls across the season boundary, so a player's week-2 value still pulls
-    from last season's tail instead of starting from one game (the B-2
-    failure mode). A player's first career game has no history and stays null.
+    Uses the shared continuous trailing window (projections/rolling_window.py):
+    shift(1) first, partitioned by gsis_id only, so windows span the season
+    boundary. A player's first career game has no history and stays null.
 
     Rates are sum(numerator) / sum(denominator) over the window, not the mean
     of per-game rates, so a 1-carry, 20-yard game doesn't count as a 20-ypc
@@ -50,32 +48,19 @@ def add_stat_rolling_features(stats_df: pl.DataFrame, window: int = 8) -> pl.Dat
 
     df = stats_df.sort(["gsis_id", "season", "week"])
 
-    def trailing(col: str, n: int, agg: str) -> pl.Expr:
-        shifted = pl.col(col).shift(1)
-        rolled = (
-            shifted.rolling_mean(window_size=n, min_samples=1) if agg == "mean"
-            else shifted.rolling_sum(window_size=n, min_samples=1)
-        )
-        return rolled.over("gsis_id")
-
-    exprs = []
+    exprs = [trailing_count("carries", window, "gsis_id").alias("stat_games_in_window")]
     for stat in VOLUME_STATS:
-        exprs.append(trailing(stat, window, "mean").alias(f"roll_{stat}"))
+        exprs.append(trailing_mean(stat, window, "gsis_id").alias(f"roll_{stat}"))
         exprs.append(
-            (trailing(stat, DELTA_SHORT, "mean") - trailing(stat, DELTA_LONG, "mean"))
+            (trailing_mean(stat, DELTA_SHORT, "gsis_id") - trailing_mean(stat, DELTA_LONG, "gsis_id"))
             .alias(f"delta_{stat}")
         )
 
     for rate, (num, den) in RATE_STATS.items():
-        num_sum = trailing(num, window, "sum")
-        den_sum = trailing(den, window, "sum")
+        num_sum = trailing_sum(num, window, "gsis_id")
+        den_sum = trailing_sum(den, window, "gsis_id")
         exprs.append(
             pl.when(den_sum > 0).then(num_sum / den_sum).otherwise(None).alias(f"roll_{rate}")
-        )
-        std_num = pl.col(num).shift(1).cum_sum().over(["gsis_id", "season"])
-        std_den = pl.col(den).shift(1).cum_sum().over(["gsis_id", "season"])
-        exprs.append(
-            pl.when(std_den > 0).then(std_num / std_den).otherwise(None).alias(f"std_{rate}")
         )
         exprs.append(
             pl.when(pl.col(den) > 0).then(pl.col(num) / pl.col(den)).otherwise(None).alias(rate)

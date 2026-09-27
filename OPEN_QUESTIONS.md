@@ -45,7 +45,12 @@ Numbering is stable; don't renumber._
 
 ## Found in the 2026-09-24 audit
 
-### Q-4. Are the README/CLAUDE.md skew conclusions still valid? — PARTIALLY ANSWERED (2026-09-24): no; docs not yet rewritten
+### Q-4. Are the README/CLAUDE.md skew conclusions still valid? — PARTIALLY ANSWERED: no; docs rewritten 2026-09-27, k grid still not re-run
+- **Update 2026-09-27:** README "Model Evaluation" now holds the final LOSO table (2019-2025,
+  continuous windows). opponent_skew does not beat rolling-average-alone at any position
+  (QB 7.923 vs 7.902 MAE, WR 4.706 vs 4.694, TE 4.342 vs 4.303). Still open: re-run the k grid
+  (and consider dropping skew for QB/WR/TE) on the continuous-window pipeline; retune or
+  redefine confidence tiers (calibration still non-monotonic every fold).
 - **Update 2026-09-24:** B-1..B-4 fixed; test.py re-run at the existing k=16 (no retuning),
   2024/25, 12,153 scored player-weeks. Projection vs baseline MAE / R²: QB 8.102 vs 8.102 /
   0.177 vs 0.174; RB 4.455 vs 4.407 / 0.420 vs 0.422; WR 4.462 vs 4.440 / 0.336 vs 0.340;
@@ -66,7 +71,12 @@ Numbering is stable; don't renumber._
   "Grid search finding" paragraph. CLAUDE.md's "don't relitigate" note covers
   design decisions; this is a correctness re-baseline, not relitigating.
 
-### Q-5. Inference-shaped pipeline — OPEN
+### Q-5. Inference-shaped pipeline — OPEN (explicitly NOT addressed by the 2026-09-27 RB merge)
+- **Note 2026-09-27:** the RB stat vector and the position registry are a backtest-validated
+  path only. Stat-vector models are fit offline per LOSO fold and passed into the engine;
+  there is still no as-of feature builder for an upcoming week and no persisted production
+  model. Continuous windows make the as-of computation simpler (last N games regardless of
+  season), but none of it is built.
 - **Cause:** every feature table is one row per *played* player-game
   (backtest-shaped). Projecting an upcoming week has no stats row to hang
   rolling features or opponent skew on. CLAUDE.md asserts train/serve parity
@@ -77,6 +87,10 @@ Numbering is stable; don't renumber._
   backtest path.
 
 ### Q-6. ToolResult v2 for distributional outputs — OPEN
+- **Note 2026-09-27:** `tools/expected_points.py` was deliberately not touched in the RB merge.
+  Its explanation string still says `projection = rolling_avg_prior + opponent_skew`, which
+  is wrong for RB rows (`projection_method == "stat_vector"`). The engine output keeps every
+  column the tool reads, so it doesn't break; fix the explanation as part of ToolResult v2.
 - **Cause:** `ToolResult` = scalar `value` (Any) + a single 4-tier
   `confidence` + free-text `explanation` + untyped `metadata`. Confidence's
   meaning (games played) is expected-points-specific; boom/bust has a
@@ -117,11 +131,20 @@ Numbering is stable; don't renumber._
 - **Resolution path:** confirm whether it's in V1 and what triggers (e.g.
   weekly refresh, lineup-lock reminders, waiver deadlines).
 
-### Q-11. Promote the RB stat-vector projection? — OPEN (2026-09-26)
+### Q-11. Promote the RB stat-vector projection? — RESOLVED 2026-09-27: promoted
+- **Resolution:** RB is served by `stat_vector` through the position registry in
+  `engine/expected_points.py`. (a) attempt-weighted rates are the default. (b) fitted
+  coefficients were explicitly accepted for RB by the author, with conditions recorded in
+  CLAUDE.md "Projection formula (per position)": a position switches only after LOSO
+  validation including bias, and coefficients are fixed and reported per fold. Final RB
+  LOSO: MAE 4.717 / R² 0.378 / Spearman 0.685 vs current formula 4.769 / 0.346 / 0.663 and
+  rolling alone 4.733 / 0.349 / 0.668 (README). The metadata fan-out bug noted below is
+  fixed (`load_player_metadata` de-duplicates + `assert_unique_key`).
+- History:
 - **Cause:** portable (league-agnostic) expected points via predicted raw stats +
   unmodified scoring. Held-out RB at n=8 roughly ties `rolling_avg_prior + opponent_skew`
   (MAE 4.430 vs 4.513 on 2024→2025; 4.444 vs 4.396 on 2025→2024; Spearman 0.743/0.721 vs
-  0.732/0.727). See README "RB stat-vector projection" and `rb_stat_vector_eval.py`.
+  0.732/0.727). See README "Model Evaluation" and `rb_stat_vector_eval.py` (since replaced by `stat_vector_eval.py RB`).
 - **Sub-decisions:** (a) OLS vs attempt-weighted rate models: unweighted under-projects
   0.2-0.5 pts/game (per-game ypc 4.18 vs pooled 4.39; rush TD rate 0.027 vs 0.033), weighted
   is unbiased but MAE +0.055; (b) this adds fitted coefficients to expected points, which
@@ -151,10 +174,22 @@ Numbering is stable; don't renumber._
 - Rush plays = `play_type == 'run'`: 14,317 vs 14,687 official = −405 kneels
   (`play_type == 'qb_kneel'`) + 36 two-point runs (off by 1). Accepted as-is; excluding
   2-pt tries from both would be a further filter change, not done.
-- Skew drops rows with `n_games < min_games` (3) and shrinks the rest by plain `n_games`, so
-  weeks 1-3 get skew 0 and early weeks are shrunk hard, even though a full prior season
-  is blended in. `epa_allowed` uses effective n = n_games + (1 − w) ·
-  prior_season_games instead; `opponent_skew.py` itself unchanged.
+- (Superseded 2026-09-27) The effective-n proposal for epa shrinkage is retired. Skew and
+  epa_allowed now use continuous 17-game windows, so week 1 already has prior-season games
+  in the window and n = games actually in the window.
+
+### Q-13. Continuous windows cost the incumbent formula accuracy — OPEN (2026-09-27)
+- **Cause:** replacing the season-partitioned window + prior-season blend with one continuous
+  trailing window (per the 2026-09-27 instruction) made `rolling_avg_prior + opponent_skew`
+  worse on LOSO 2019-2025: MAE +0.03 QB, +0.06 RB, +0.05 WR, +0.06 TE; weeks 1-3 +0.08 to
+  +0.16; R² −0.017 to −0.018 for RB/WR/TE (QB R² +0.006). Measured on identical rows.
+- **Why (likely):** for a returning player the old blend leaned on last season's full-season
+  average (~17 games), a bigger sample than the last 8 games.
+- **Checked:** a 12-game continuous player window recovers QB (7.895 MAE vs 7.893 blend, better
+  R²/Spearman) but WR/TE stay ~+0.04 MAE worse. Window left at 8 (not tuned).
+- **Resolution path:** accept (one rule everywhere), tune the player window per position, or
+  move WR/TE to the stat vector (Part 2 of the same instruction starts WR). RB is unaffected
+  in production because it no longer uses this formula.
 
 ### Q-10. Long-lived carry-overs (from CLAUDE.md / README) — DEFERRED
 - Confidence-tier thresholds are provisional; calibration was non-monotonic

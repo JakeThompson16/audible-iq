@@ -24,21 +24,29 @@ a raw Sleeper call.
 - Schedule -> per-team opponent table — `clients/nflreadpy/team_data.py`
 - Evaluation harness — `engine/metrics.py` (logic sound; inputs are suspect, B-1)
 
-## In progress (works but defective — see Broken)
+## Update 2026-09-27: RB stat vector merged into the engine
+- Expected points — `engine/expected_points.py`: position -> implementation registry.
+  RB = stat vector (`projections/expected_points/stat_vector/`), QB/WR/TE =
+  rolling_avg_prior + opponent_skew. Backtest-validated only (Q-5 still open).
+- Continuous rolling windows everywhere (`projections/rolling_window.py`): player
+  features, opponent skew, epa_allowed, stat-vector features. Costs the incumbent
+  formula ~0.03-0.06 MAE (Q-13).
+- Shared `common/frames.assert_unique_key`, applied at `load_player_metadata`
+  (crosswalk duplicates fixed), `load_player_stats`, games/skew/epa/actuals joins.
+- LOSO harness `evaluation/backtest.py`; drivers `test.py`, `stat_vector_eval.py`.
+- Tools layer (`tools/`) intentionally untouched (Q-6/Q-7).
+
+## In progress
 - Rolling features — `projections/expected_points/features/player_rolling.py`
 - Opponent skew — `projections/expected_points/features/opponent_skew.py`
-- Expected points — `engine/expected_points.py`
+  (no better than rolling alone at any position on corrected data; Q-4)
 - Tool contract slice — `tools/expected_points.py`, `tools/registry.py`,
   `domain/tool_result.py`
 - PBP scaffolding — `clients/nflreadpy/pbp_data.py`,
   `projections/boom_bust/features/aggregate_pbp.py` (returns nothing; pass
   filter now excludes sacks, 2026-09-26)
-- RB stat-vector projection (2026-09-26, experimental, standalone) —
-  `projections/expected_points/features/epa_allowed.py`, `stat_rolling.py`,
-  `projections/expected_points/stat_vector/rb.py`, driver `rb_stat_vector_eval.py`.
-  Iteration 2 (2026-09-27): no epa in volume models, attempt-weighted rates, LOSO over
-  2019-2025. Best R² in 6/7 and Spearman in 5/7 folds, worse MAE than rolling-only in 5/7.
-  Promotion is Q-11.
+- RB stat vector: DONE 2026-09-27 (see update above; Q-11 resolved). LOSO mean MAE 4.717 /
+  R² 0.378 / Spearman 0.685 vs rolling alone 4.733 / 0.349 / 0.668.
 
 ## Not started
 NiceGUI app; boom/bust threshold + distribution; inference path; leaguemate

@@ -20,7 +20,11 @@ Layered to isolate external API/data-source dependencies from core logic:
   - `clients/sleeper_client.py` — raw Sleeper API calls (leagues, rosters,
     users, scoring settings). No business logic.
   - `clients/nflreadpy/` — player metadata (`player_data.py`) and
-    team/schedule data (`team_data.py`) via nflreadpy/nflverse.
+    team/schedule data (`team_data.py`) via nflreadpy/nflverse. The
+    dynastyprocess crosswalk URL patch lives in `player_data.py`.
+- `common/frames.py` — `assert_unique_key(df, keys, name)` (use on the right
+  side of every one-to-one join) and `assert_no_fanout(before, after, name)`.
+  Shared; don't write local duplicate checks.
 - `adapters/` (Sleeper) — maps raw external JSON into domain schema
   (e.g. `ScoringSettings.from_dict()`).
 - `engine/` — pure computation across domain objects/dataframes.
@@ -28,42 +32,49 @@ Layered to isolate external API/data-source dependencies from core logic:
     stats and league ScoringSettings via `SCORING_TO_STAT_COLUMN` registry
     (maps ScoringSettings field names -> stats_df column names, since they
     don't align 1:1).
+- `projections/rolling_window.py` — the ONE continuous trailing-window
+  utility (`trailing_mean`, `trailing_sum`, `trailing_count`) used by every
+  rolling feature. See "Continuous rolling windows" below.
 - `projections/expected_points/features/` — feature engineering for the
   projection model.
-  - `player_rolling.py` — trailing (prior-games-only) rolling averages per
-    player: `rolling_avg_prior` (fantasy points), `trailing_opportunities_avg`
-    (carries + targets combined — see below), `trailing_targets_avg`,
-    `trailing_attempts_avg`.
+  - `player_rolling.py` — trailing 8-game averages per player, spanning
+    seasons: `rolling_avg_prior` (fantasy points), `n_games_in_window`,
+    `trailing_opportunities_avg` (carries + targets combined — see below),
+    `trailing_targets_avg`, `trailing_attempts_avg`.
   - `opponent_skew.py` — Adjusted Points Allowed (APA): opponent-adjusted
-    matchup scoring per defense/position, cumulative across the season.
+    matchup residual per defense/position over the defense's trailing
+    `SKEW_WINDOW` (17) games.
   - `epa_allowed.py` — `epa_allowed_pass` / `epa_allowed_rush` per
     (defteam, season, week): opponent EPA/play allowed minus that week's
-    league EPA/play, then the same shape as opponent skew (week-level
-    `.shift(1)`, cumulative mean, prior-season blend at min(n/9, 0.9)), shrunk
-    toward 0 by effective n = n_games + (1 − w) · prior_season_games. Pass =
+    league EPA/play, trailing 17-game window like opponent skew, shrunk toward
+    0 by n / (n + k) with n = games in window. Pass =
     `play_type == 'pass' & sack == 0`, run = `play_type == 'run'` (shared with
     `aggregate_pbp.py`).
   - `stat_rolling.py` — per-stat trailing features for the stat vector:
     `roll_<volume>`, `roll_<rate>` (ratio of rolling sums), `delta_<volume>`
-    (3-game minus 8-game mean). Partitioned by `gsis_id` only, so windows
-    roll across the season boundary.
-- `projections/expected_points/stat_vector/rb.py` — EXPERIMENTAL, not
-  wired into production. RB-only portable expected points: OLS volume
-  models (carries, targets; trailing avg + usage delta, no matchup term) +
-  attempt-weighted rate models (ypc, rush_td_rate, catch_rate, ypr,
-  rec_td_rate; trailing rate + delta + epa_allowed), stats derived by
-  multiplication, scored by the unmodified `calculate_points_vectorized`.
-  Evaluated leave-one-season-out over 2019-2025 (plus partial 2026). Never predicts fantasy points
-  directly (that locks the model to one league's scoring). Driver:
-  `rb_stat_vector_eval.py`. Promotion is OPEN_QUESTIONS.md Q-11 (it
-  introduces fitted coefficients, which the "no fitted model" decision
-  below would have to be revisited for).
-- `engine/expected_points.py` — `calculate_expected_points(stats_df, skew_df)`:
-  joins rolling stats to opponent skew (same validated join keys as
-  `test.py` — week/season/opponent_team/position) and computes
-  `projection = rolling_avg_prior + opponent_skew` plus a `confidence` tier
-  per row. See "Confidence tiers" below for the derivation and its known
-  limitations.
+    (3-game minus 8-game mean), `stat_games_in_window`.
+- `projections/expected_points/stat_vector/` — portable expected points:
+  predict the raw stat line, score it with the unmodified
+  `calculate_points_vectorized`. Never predicts fantasy points directly (that
+  locks the model to one league's scoring).
+  - `core.py` — shared machinery: `StatVectorSpec` (per-position model
+    spec), OLS/WLS fitting, `fit_stat_vector()` (offline fit ->
+    `StatVectorModel`), `StatVectorModel.predict_points()`.
+  - `rb.py` — `RB_SPEC` (validated, in production for RB). `specs.py` —
+    `STAT_VECTOR_SPECS`, positions with a spec.
+- `engine/expected_points.py` — `calculate_expected_points(stats_df,
+  context, position_implementations=None)`. Joins opponent skew for every
+  row (week/season/opponent_team/position), then dispatches each position to
+  an implementation via `POSITION_IMPLEMENTATIONS` (see "Swappable
+  implementations" below): RB -> `stat_vector`, QB/WR/TE ->
+  `rolling_plus_skew`. Adds `projection`, `projection_method`, and a
+  `confidence` tier per row. `ExpectedPointsContext` carries skew_df,
+  epa_df, scoring, and fitted stat-vector models (fitting happens offline).
+- `evaluation/backtest.py` — offline harness: `load_inputs()`,
+  `loso_folds()` (leave-one-season-out over 2019-2025 + partial 2026),
+  `predict_fold()` (fit stat-vector models on train seasons, run the engine).
+  Drivers: `test.py` (all positions, production registry),
+  `stat_vector_eval.py <POS>` (new model vs current formula vs rolling alone).
 - `engine/metrics.py` — `evaluate_projections(predictions_df, actuals_df)`:
   offline evaluation only (not used at inference time). MAE/RMSE/mean
   error/R², reported for the full projection AND for the
@@ -90,21 +101,28 @@ Layered to isolate external API/data-source dependencies from core logic:
 
 ## Key design decisions (with rationale — don't relitigate without reason)
 
-**Projection formula**: `projection = rolling_avg_prior + opponent_skew`.
-Deliberately simple/explainable (recent form + matchup adjustment) rather
-than a fitted model, because the projection is the reference point the
-boom/bust classifier measures deviation against — bias in the baseline
-would silently propagate into what "boom"/"bust" mean.
+**Projection formula (per position)**: QB/WR/TE use
+`projection = rolling_avg_prior + opponent_skew`, deliberately simple and
+unfitted. RB uses the stat vector (fitted OLS volume + attempt-weighted rate
+models, recomposed through league scoring). Adopting fitted coefficients for
+RB was an explicit decision on 2026-09-27 (Q-11b), made because the stat vector
+beat the incumbent on held-out seasons AND is league-portable. The original
+reason for staying unfitted still applies: the projection is boom/bust's
+reference point, so bias in it propagates into what "boom"/"bust" mean. So a
+position switches only after a LOSO validation that includes bias, and the
+fitted coefficients are fixed, inspectable, and reported per fold, not tuned
+per user.
 
-**Leakage prevention (critical, applies everywhere)**: all rolling/cumulative
-features use `.shift(1)` before `.rolling_mean()` / `.cum_sum()` /
-`.cum_count()`, so week W's value only ever reflects games strictly before
-W. This applies to player rolling averages AND opponent skew. Never remove
-a `.shift(1)` without understanding this.
+**Leakage prevention (critical, applies everywhere)**: all rolling
+features use `.shift(1)` before the window (built into
+`projections/rolling_window.py`), so week W's value only ever reflects games
+strictly before W. This applies to player rolling averages, opponent skew,
+epa_allowed, and every stat-vector feature. Never remove a `.shift(1)`
+without understanding this.
 
 **Opponent skew (APA)**: `residual = fantasy_points - rolling_avg_prior`,
-averaged cumulatively per (defense, position) across the season, using
-`.shift(1)` first (same leakage rule). Additive, not multiplicative — ratios
+aggregated to one value per (defense, position, week), then averaged over the
+defense's trailing 17 games (`.shift(1)` first, same leakage rule). Additive, not multiplicative — ratios
 blow up near small denominators and would overweight noise from low-baseline
 players. `min_games` floor filters out low-sample rows; QB may need a higher
 floor than RB/WR/TE since QB fantasy points are structurally higher-variance
@@ -172,16 +190,27 @@ seasons (+15.1 vs −1.0 on carries), and removing it changed LOSO mean MAE by
 0.001. With six training seasons, all five rate-model epa coefficients are
 positive in every fold (ypc p < 0.001).
 
-**RB rate models are attempt-weighted by default** (`fit_rb_models(weight_rates=True)`).
-Unweighted fits under-project by +0.31 pts/game on average (LOSO bias); weighted
-bias is −0.03, at a cost of +0.046 MAE. Replacing fitted rates with constants was
-tested and lost in every fold: league-average rates cost +0.032 MAE,
-season-to-date rates +0.09 MAE. The loss is small but consistent, so fitted
-rates are the default pending review (OPEN_QUESTIONS Q-11). The constant option
-is kept in code (`with_unfitted_rates`) for comparison. Rate models fit only
-on rows where the rate is defined (denominator > 0). A player with history but no attempts of a kind in the
-window gets the pooled training-season RB rate for that `roll_<rate>`.
-Rookies with no history stay None.
+**Stat-vector rate models are attempt-weighted by default** (`fit_models(weight_rates=True)`).
+Unweighted fits under-project RB by +0.31 pts/game on average (LOSO bias);
+weighted bias is −0.03, at a cost of +0.046 MAE. Replacing fitted rates with
+constants was tested for RB and lost in every fold (league-average rates +0.032
+MAE, season-to-date rates +0.09 MAE); both variants were removed from the code
+(results in README / git history). Rate models fit only on rows where the rate
+is defined (denominator > 0). A player with history but no attempts of a kind in
+the window gets the pooled training rate for that `roll_<rate>`. Rookies with no
+history stay None.
+
+**Swappable implementations** (`engine/expected_points.py`, VISION.md / Q-2):
+`IMPLEMENTATIONS` maps a name to a function `(rows, ExpectedPointsContext) ->
+KEY + projection`, and `POSITION_IMPLEMENTATIONS` maps position -> name. Never
+add an inline `if position == ...` branch to pick a method. To move a position
+to the stat vector: add its `StatVectorSpec` to `STAT_VECTOR_SPECS`, validate
+with `stat_vector_eval.py <POS>` (LOSO, report bias and coefficient stability),
+then flip its entry in `POSITION_IMPLEMENTATIONS`. Per-call overrides
+(`position_implementations={"RB": "rolling_plus_skew"}`) are how comparisons
+score the old formula. The engine never fits; fitted models arrive in the
+context. This is a backtest-validated path only: there is no inference
+(upcoming-week) path yet (Q-5).
 
 **Confidence tiers** (`engine/expected_points.py`): derived *solely* from
 player-side `games_this_season` — not opponent_skew's `n_games`, not outcome
@@ -203,22 +232,29 @@ either:
   confidence is conservative in this case, never overconfident, which is the
   acceptable failure direction.
 - **Skew confidence assumes defensive scheme continuity year-over-year.**
-  opponent_skew blends in prior-season data early in the season (see below)
-  without adjustment for defensive coordinator or personnel turnover. A
-  defense that overhauled its scheme in the offseason will still get
-  partial credit from last year's skew profile until enough current-season
-  games accumulate to dilute it out.
+  opponent_skew and epa_allowed windows span the season boundary (see
+  below) without adjustment for defensive coordinator or personnel turnover.
+  A defense that overhauled its scheme in the offseason keeps last year's
+  games in its 17-game window until current-season games displace them.
 
-**Early-season handling**: current-season weight = `min(games_played / 9, 0.9)`;
-last season's full-season average inherits the rest — so it always retains
-at least 0.1 weight even once the current season has plenty of games.
-- Opponent skew: blends current-season cumulative skew with prior-season
-  full-season average skew per (defense, position), weighted by `n_games`
-  this season (full trust ~week 10, never fully to 1.0).
-- Player rolling average: same blend pattern — returning veterans blend
-  current-season rolling avg with last-season's full-season average,
-  weighted by `games_this_season`.
-- True rookies with no current- or prior-season data: `rolling_avg_prior`
+**Continuous rolling windows (early-season handling)**: every rolling
+feature is a trailing window over the entity's last N games, partitioned by
+entity only, so it spans the season boundary freely. Week 1 uses the tail of
+last season. There is no blend-weight formula; the evidence behind a value is
+the actual count of games in the window (`n_games_in_window`, skew/epa
+`n_games`), which also drives skew/epa shrinkage n / (n + k) and the
+`min_games` floor. Windows: player features 8 games, opponent skew and
+epa_allowed 17 (one season of defense games). Neither is tuned.
+- History (retired 2026-09-27): season-partitioned windows blended with last
+  season's full-season average at weight `min(games / 9, 0.9)`, and a
+  proposed effective-n = n_games + (1 − w) · prior_games for epa shrinkage.
+  Both were replaced by the continuous window for one consistent rule.
+- Measured cost for the incumbent `rolling_avg_prior + opponent_skew`
+  formula (LOSO means 2019-2025): MAE worse by +0.03 (QB), +0.06 (RB), +0.05 (WR),
+  +0.06 (TE); weeks 1-3 worse by +0.08 to +0.16. A 12-game player window
+  recovers QB fully but not WR/TE (~+0.04). Recorded in OPEN_QUESTIONS Q-13.
+- Confidence tiers are unaffected (verified identical on all 141,434 rows).
+- True rookies with no prior games: `rolling_avg_prior`
   resolves to `None`, NOT a fabricated positional-average fallback. This is
   deliberate — a fake baseline would look like real data but isn't
   well-grounded. Downstream (agent/UI) must handle `None` as an explicit
@@ -260,6 +296,11 @@ scoring configs including a TE-premium league) — exact matches.
   row fan-out (each row matches multiple rows on the other side) rather than
   an error. Symptom: row count balloons, and/or a `_right`-suffixed
   duplicate column appears for a column that exists on both sides.
+- The dynastyprocess ID crosswalk (`load_ff_playerids`) maps ~10 gsis_ids
+  to two rows (sometimes two different people). An inner join on gsis_id then
+  duplicates every stats row for those players. `load_player_metadata`
+  now de-duplicates and asserts. Always `assert_unique_key` the right side of
+  a join that should be one-to-one.
 - Always sanity-check aggregation output (sort, print head/tail, check
   n_games / sample sizes, check percentiles) rather than trusting that code
   which runs without error is correct. Several real bugs in this project

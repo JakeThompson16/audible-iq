@@ -1,6 +1,15 @@
 
 import polars as pl
 
+from common.frames import assert_unique_key
+from projections.rolling_window import trailing_count, trailing_mean
+
+
+# Trailing window of defense games (one regular season). Continuous across the
+# season boundary, so week 1 uses last season's games instead of a separate
+# prior-season blend. Not tuned.
+SKEW_WINDOW = 17
+
 
 def _calculate_position_skew(
     stats_df: pl.DataFrame,
@@ -16,11 +25,14 @@ def _calculate_position_skew(
         & (pl.col(volume_col) >= volume_threshold)
     )
 
-    joined = pos_stats.join(games_df, on=["team", "season", "week"], how="inner")
+    joined = pos_stats.join(
+        assert_unique_key(games_df, ["team", "season", "week"], "games_df"),
+        on=["team", "season", "week"], how="inner",
+    )
 
     # Aggregate to one residual per (defense, season, week) BEFORE shifting, so
-    # .shift(1)/cum_* operate over games (weeks), not player-rows: no same-week
-    # leakage, and n_games counts games.
+    # the trailing window operates over games (weeks), not player-rows: no
+    # same-week leakage, and n_games counts games.
     joined = (
         joined.with_columns(
             (pl.col("fantasy_points") - pl.col("rolling_avg_prior")).alias("residual")
@@ -30,43 +42,11 @@ def _calculate_position_skew(
         .sort(["opponent", "season", "week"])
     )
 
-    joined = joined.with_columns(
-        pl.col("residual").shift(1).over(["opponent", "season"]).alias("residual_prior")
-    )
-
-    joined = joined.with_columns([
-        pl.col("residual_prior").cum_sum().over(["opponent", "season"]).alias("_cum_sum"),
-        pl.col("residual_prior").cum_count().over(["opponent", "season"]).alias("n_games"),
-    ])
-
+    # n_games = games actually in the window (<= SKEW_WINDOW); drives both the
+    # min_games floor and the n / (n + k) shrinkage.
     skew = joined.with_columns(
-        (pl.col("_cum_sum") / pl.col("n_games")).alias("opponent_skew")
-    )
-
-    # Blend with last season's full-season average residual for this
-    # defense/position, same early-season ramp as player_rolling.py: weight
-    # on the current season is n_games / 9, capped at 0.9 (see CLAUDE.md
-    # "Early-season handling"). Uses raw (unshifted) residual — the prior
-    # season is already complete, so there's no leakage risk averaging
-    # across all of it.
-    last_season_skew = (
-        joined.group_by(["opponent", "season"])
-        .agg(pl.col("residual").mean().alias("_last_season_avg_skew"))
-        .with_columns((pl.col("season") + 1).alias("season"))
-    )
-
-    skew = skew.join(last_season_skew, on=["opponent", "season"], how="left")
-
-    current_weight = (pl.col("n_games") / 9.0).clip(upper_bound=0.9)
-
-    skew = skew.with_columns(
-        pl.when(pl.col("_last_season_avg_skew").is_not_null())
-        .then(
-            current_weight * pl.col("opponent_skew")
-            + (1 - current_weight) * pl.col("_last_season_avg_skew")
-        )
-        .otherwise(pl.col("opponent_skew"))
-        .alias("opponent_skew")
+        trailing_mean("residual", SKEW_WINDOW, "opponent").alias("opponent_skew"),
+        trailing_count("residual", SKEW_WINDOW, "opponent").alias("n_games"),
     )
 
     skew = (
@@ -102,7 +82,7 @@ def calculate_all_position_skews(
         sanity_clip: float | None = 12.0) -> pl.DataFrame:
     """
     :param k: shrinkage constant — skew_shrunk = skew_raw * (n / (n + k)),
-        where n is n_games (current-season games of defense/position data
+        where n is n_games (defense games in the trailing SKEW_WINDOW
         backing that row's estimate). A single tunable constant, chosen by
         grid search against engine.metrics.evaluate_projections() output
         (see CLAUDE.md), not fit via optimization.
@@ -119,8 +99,7 @@ def calculate_all_position_skews(
         calculate_qb_skew(stats_df, games_df),
     ])
 
-    assert not df.select(["defense", "week", "season", "position"]).is_duplicated().any(), \
-        "skew_df has duplicate (defense, week, season, position) keys"
+    assert_unique_key(df, ["defense", "week", "season", "position"], "skew_df")
 
     # Sample-size-weighted shrinkage toward 0, replacing the old hard ±8
     # clip. Low-n estimates (noisy, per the same low-n_games clustering

@@ -1,0 +1,9 @@
+
+from projections.expected_points.stat_vector.rb import RB_SPEC
+
+
+# Positions with a validated stat-vector spec. Adding a position here does not
+# switch it over; engine/expected_points.py POSITION_IMPLEMENTATIONS does that.
+STAT_VECTOR_SPECS = {
+    "RB": RB_SPEC,
+}

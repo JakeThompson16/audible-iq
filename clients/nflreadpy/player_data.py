@@ -3,7 +3,19 @@ import nflreadpy as nfl
 import polars as pl
 from polars import Series
 
+from common.frames import assert_unique_key
 from config import PLAYER_METADATA
+
+# nflreadpy 0.1.5 (latest on PyPI) builds the dynastyprocess player-ID
+# crosswalk URL via github.com/.../raw/master/..., which now 404s — GitHub
+# dropped that redirect. raw.githubusercontent.com still serves the file.
+# Patched here (the module that calls load_ff_playerids) rather than in
+# site-packages so it survives reinstalls, and so every caller gets it
+# without importing test.py.
+import nflreadpy.downloader as _nflreadpy_downloader
+_nflreadpy_downloader.NflverseDownloader.BASE_URLS["dynastyprocess"] = (
+    "https://raw.githubusercontent.com/dynastyprocess/data/master/files/"
+)
 
 
 RAW_STAT_COLUMNS = [
@@ -36,6 +48,7 @@ def load_player_metadata(cutoff: int = 2023) -> pl.DataFrame:
 
     players = nfl.load_players()
     players = players.filter(pl.col('last_season') > cutoff)
+    assert_unique_key(players, ['gsis_id'], 'load_players')
 
     df = ff_ids.join(
         players,
@@ -43,7 +56,22 @@ def load_player_metadata(cutoff: int = 2023) -> pl.DataFrame:
         right_on='gsis_id',
         how='inner'
     )
-    return df.select(PLAYER_METADATA)
+
+    # The dynastyprocess crosswalk maps a few gsis_ids to two rows (e.g. Justin
+    # Hamilton, Corey Moore; ~10 ids total), which fanned out every stats join
+    # for those players. Keep the crosswalk row whose name matches nflverse's
+    # player record, then the one with a sleeper_id, then the first.
+    df = (
+        df.with_columns(
+            (pl.col('name').str.to_lowercase() == pl.col('display_name').str.to_lowercase())
+            .fill_null(False).alias('_name_match'),
+            pl.col('sleeper_id').is_not_null().alias('_has_sleeper'),
+        )
+        .sort(['gsis_id', '_name_match', '_has_sleeper'], descending=[False, True, True])
+        .unique(subset=['gsis_id'], keep='first', maintain_order=True)
+    )
+
+    return assert_unique_key(df.select(PLAYER_METADATA), ['gsis_id'], 'load_player_metadata')
 
 
 def get_positional_ids(
@@ -189,6 +217,8 @@ def load_player_stats(seasons: int | list[int]) -> pl.DataFrame:
     )
 
     df = _build_stats(df)
+
+    assert_unique_key(df, ['gsis_id', 'season', 'week'], 'load_player_stats')
 
     return df.select(
         PLAYER_METADATA +

@@ -1,6 +1,8 @@
 
 import polars as pl
 
+from common.frames import assert_unique_key
+
 
 POSITIONS = ["QB", "RB", "WR", "TE"]
 # Ordered highest -> lowest confidence. insufficient_data (0 games this season)
@@ -112,8 +114,10 @@ def evaluate_projections(predictions_df: pl.DataFrame, actuals_df: pl.DataFrame)
     n_total = predictions_df.height
 
     df = predictions_df.join(
-        actuals_df.select(["gsis_id", "season", "week", "fantasy_points"])
-                  .rename({"fantasy_points": "actual"}),
+        assert_unique_key(
+            actuals_df.select(["gsis_id", "season", "week", "fantasy_points"]),
+            ["gsis_id", "season", "week"], "actuals_df",
+        ).rename({"fantasy_points": "actual"}),
         on=["gsis_id", "season", "week"],
         how="inner",
     )

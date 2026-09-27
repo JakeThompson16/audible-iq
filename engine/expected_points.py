@@ -1,5 +1,12 @@
 
+from dataclasses import dataclass, field
+from typing import Callable
+
 import polars as pl
+
+from common.frames import assert_no_fanout, assert_unique_key
+from domain.scoring import ScoringSettings
+from projections.expected_points.stat_vector.core import StatVectorModel
 
 
 # Provisional — not yet calibrated against actual MAE per bucket. Once
@@ -10,28 +17,93 @@ CONFIDENCE_TIER_THRESHOLDS = {
     "medium": 8,
 }
 
+KEY = ["gsis_id", "season", "week"]
 
-def calculate_expected_points(stats_df: pl.DataFrame, skew_df: pl.DataFrame) -> pl.DataFrame:
+
+@dataclass
+class ExpectedPointsContext:
+    """
+    Everything an implementation may need beyond the stats rows. Fitted
+    models are produced offline (stat_vector.core.fit_stat_vector) and passed
+    in; this module never fits anything.
+    """
+    skew_df: pl.DataFrame
+    epa_df: pl.DataFrame | None = None
+    scoring: ScoringSettings | None = None
+    stat_vector_models: dict[str, StatVectorModel] = field(default_factory=dict)
+
+
+# An implementation takes one position's player-week rows (full history,
+# already joined with opponent_skew) and returns KEY + "projection".
+Implementation = Callable[[pl.DataFrame, ExpectedPointsContext], pl.DataFrame]
+
+
+def rolling_plus_skew(rows: pl.DataFrame, ctx: ExpectedPointsContext) -> pl.DataFrame:
+    """projection = rolling_avg_prior + opponent_skew (the original formula)."""
+    return rows.select(KEY + [(pl.col("rolling_avg_prior") + pl.col("opponent_skew")).alias("projection")])
+
+
+def stat_vector(rows: pl.DataFrame, ctx: ExpectedPointsContext) -> pl.DataFrame:
+    """Predicted raw stat line scored by the league's settings (stat_vector/core.py)."""
+    position = rows["position"][0]
+    model = ctx.stat_vector_models.get(position)
+    if model is None or ctx.epa_df is None or ctx.scoring is None:
+        raise ValueError(
+            f"{position} is mapped to 'stat_vector' but the context is missing a fitted "
+            f"model for it, epa_df, or scoring. Fit one with fit_stat_vector(), or map "
+            f"{position} to 'rolling_plus_skew' via position_implementations."
+        )
+    return model.predict_points(rows, ctx.epa_df, ctx.scoring).select(KEY + ["projection"])
+
+
+# Swappable implementation behind a stable interface (VISION.md, Q-2): the
+# implementation is chosen per position here, never by an inline branch.
+# A position switches only after it is separately validated (README).
+IMPLEMENTATIONS: dict[str, Implementation] = {
+    "rolling_plus_skew": rolling_plus_skew,
+    "stat_vector": stat_vector,
+}
+
+POSITION_IMPLEMENTATIONS: dict[str, str] = {
+    "QB": "rolling_plus_skew",
+    "RB": "stat_vector",
+    "WR": "rolling_plus_skew",
+    "TE": "rolling_plus_skew",
+}
+DEFAULT_IMPLEMENTATION = "rolling_plus_skew"
+
+
+def calculate_expected_points(
+        stats_df: pl.DataFrame,
+        context: ExpectedPointsContext,
+        position_implementations: dict[str, str] | None = None) -> pl.DataFrame:
     """
     :param stats_df: player-week stats, output of add_rolling_features() — must
         include gsis_id, season, week, opponent_team, position, rolling_avg_prior
-    :param skew_df: output of calculate_all_position_skews() — defense, week,
-        season, position, opponent_skew, n_games
-    :return: stats_df with games_this_season, projection, confidence columns added
+        (and the raw stat columns, for stat-vector positions)
+    :param context: skew_df (calculate_all_position_skews() output) plus, for
+        stat-vector positions, epa_df, scoring, and fitted models
+    :param position_implementations: per-call overrides of
+        POSITION_IMPLEMENTATIONS, e.g. {"RB": "rolling_plus_skew"} to score
+        the original formula for comparison
+    :return: stats_df with games_this_season, opponent_skew,
+        opponent_skew_n_games, projection, projection_method, confidence added
 
-    projection = rolling_avg_prior + opponent_skew. Join keys (week, season,
-    opponent_team/defense, position) are the same validated join as test.py —
-    position must be in the join key or rows silently fan out (see CLAUDE.md).
+    opponent_skew is joined for every row (week, season, opponent_team/defense,
+    position — position must be in the key or rows fan out, see CLAUDE.md),
+    even where the position's implementation doesn't use it.
 
     Confidence is derived solely from player-side games_this_season — not
-    opponent_skew's n_games, not outcome volatility (that's boom/bust's job).
-    See CLAUDE.md for the documented mid-season-return limitation and the
-    year-over-year defensive-scheme-continuity assumption this implies.
+    opponent_skew's n_games, not the rolling window, not outcome volatility
+    (that's boom/bust's job). See CLAUDE.md for the documented mid-season-return
+    limitation and the defensive-scheme-continuity assumption this implies.
     """
     required = {"gsis_id", "season", "week", "opponent_team", "position", "rolling_avg_prior"}
     missing = required - set(stats_df.columns)
     if missing:
         raise ValueError(f"stats_df missing required columns: {missing}")
+
+    impls = {**POSITION_IMPLEMENTATIONS, **(position_implementations or {})}
 
     stats_df = stats_df.sort(["gsis_id", "season", "week"])
 
@@ -43,24 +115,32 @@ def calculate_expected_points(stats_df: pl.DataFrame, skew_df: pl.DataFrame) -> 
         .alias("games_this_season")
     )
 
-    df = stats_df.join(
-        skew_df.select(["defense", "week", "season", "position", "opponent_skew", "n_games"])
-               .rename({"n_games": "opponent_skew_n_games"}),
+    skew = assert_unique_key(
+        context.skew_df.select(["defense", "week", "season", "position", "opponent_skew", "n_games"])
+        .rename({"n_games": "opponent_skew_n_games"}),
+        ["defense", "week", "season", "position"], "skew_df",
+    )
+    df = assert_no_fanout(stats_df, stats_df.join(
+        skew,
         left_on=["week", "season", "opponent_team", "position"],
         right_on=["week", "season", "defense", "position"],
         how="left",
-    )
-
-    assert df.height == stats_df.height, \
-        f"join fan-out: {df.height} rows vs {stats_df.height} stats rows"
+    ), "stats x skew")
 
     df = df.with_columns(
         pl.col("opponent_skew").fill_null(0.0)
     )
 
-    df = df.with_columns(
-        (pl.col("rolling_avg_prior") + pl.col("opponent_skew")).alias("projection")
-    )
+    parts = []
+    for position in df["position"].unique().to_list():
+        name = impls.get(position, DEFAULT_IMPLEMENTATION)
+        rows = df.filter(pl.col("position") == position)
+        parts.append(
+            IMPLEMENTATIONS[name](rows, context).with_columns(pl.lit(name).alias("projection_method"))
+        )
+    projections = assert_unique_key(pl.concat(parts), KEY, "projections")
+
+    df = assert_no_fanout(df, df.join(projections, on=KEY, how="left"), "stats x projections")
 
     df = df.with_columns(
         pl.when(pl.col("games_this_season") == 0)
