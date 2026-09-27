@@ -31,6 +31,9 @@ class ExpectedPointsContext:
     epa_df: pl.DataFrame | None = None
     scoring: ScoringSettings | None = None
     stat_vector_models: dict[str, StatVectorModel] = field(default_factory=dict)
+    # position -> rolling window the stats' rolling_avg_prior must have been
+    # built with (add_rolling_features(window=...)); checked per row.
+    rolling_windows: dict[str, int] = field(default_factory=lambda: dict(POSITION_ROLLING_WINDOWS))
 
 
 # An implementation takes one position's player-week rows (full history,
@@ -39,7 +42,11 @@ Implementation = Callable[[pl.DataFrame, ExpectedPointsContext], pl.DataFrame]
 
 
 def rolling_plus_skew(rows: pl.DataFrame, ctx: ExpectedPointsContext) -> pl.DataFrame:
-    """projection = rolling_avg_prior + opponent_skew (the original formula)."""
+    """
+    projection = rolling_avg_prior + opponent_skew (the original formula),
+    with rolling_avg_prior over the position's own window
+    (ctx.rolling_windows; verified in calculate_expected_points).
+    """
     return rows.select(KEY + [(pl.col("rolling_avg_prior") + pl.col("opponent_skew")).alias("projection")])
 
 
@@ -72,6 +79,19 @@ POSITION_IMPLEMENTATIONS: dict[str, str] = {
 }
 DEFAULT_IMPLEMENTATION = "rolling_plus_skew"
 
+# Per-position continuous-window length (games) for rolling_avg_prior and the
+# trailing volume features — config, not an implementation branch. Chosen by
+# LOSO grid search over {8, 10, 12, 14, 16, 20} on mean MAE, 2019-2025
+# (README "Rolling window length"). RB stays 8: it is on stat_vector, and its
+# rolling_avg_prior only feeds skew and comparison baselines.
+POSITION_ROLLING_WINDOWS: dict[str, int] = {
+    "QB": 12,
+    "RB": 8,
+    "WR": 10,
+    "TE": 12,
+}
+DEFAULT_ROLLING_WINDOW = 8
+
 
 def calculate_expected_points(
         stats_df: pl.DataFrame,
@@ -98,10 +118,22 @@ def calculate_expected_points(
     (that's boom/bust's job). See CLAUDE.md for the documented mid-season-return
     limitation and the defensive-scheme-continuity assumption this implies.
     """
-    required = {"gsis_id", "season", "week", "opponent_team", "position", "rolling_avg_prior"}
+    required = {"gsis_id", "season", "week", "opponent_team", "position", "rolling_avg_prior", "rolling_window"}
     missing = required - set(stats_df.columns)
     if missing:
         raise ValueError(f"stats_df missing required columns: {missing}")
+
+    # The rolling window is per-position config held in the context; make sure
+    # the stats were built with it rather than trusting the caller.
+    expected_window = pl.col("position").replace_strict(
+        context.rolling_windows, default=DEFAULT_ROLLING_WINDOW, return_dtype=pl.Int32)
+    mismatched = stats_df.filter(pl.col("rolling_window") != expected_window)
+    if mismatched.height:
+        bad = mismatched.group_by("position").agg(pl.col("rolling_window").first()).rows()
+        raise ValueError(
+            f"rolling_avg_prior was built with windows {bad} but the context expects "
+            f"{context.rolling_windows}; pass the same mapping to add_rolling_features()."
+        )
 
     impls = {**POSITION_IMPLEMENTATIONS, **(position_implementations or {})}
 

@@ -8,7 +8,7 @@ from clients.nflreadpy.player_data import load_player_stats
 from clients.nflreadpy.team_data import pull_team_games
 from domain.scoring import ScoringSettings
 from engine.expected_points import (
-    POSITION_IMPLEMENTATIONS, ExpectedPointsContext, calculate_expected_points,
+    POSITION_IMPLEMENTATIONS, POSITION_ROLLING_WINDOWS, ExpectedPointsContext, calculate_expected_points,
 )
 from engine.scoring import calculate_points_vectorized
 from projections.expected_points.features.epa_allowed import calculate_epa_allowed
@@ -27,7 +27,7 @@ HISTORY_SEASON = 2018
 FULL_SEASONS = list(range(2019, 2026))
 PARTIAL_SEASON = 2026
 LOAD_SEASONS = [HISTORY_SEASON] + FULL_SEASONS + [PARTIAL_SEASON]
-WINDOW = 8
+WINDOW = 8  # stat-vector feature window (rolling_avg_prior uses POSITION_ROLLING_WINDOWS)
 
 PBP_COLUMNS = ["season", "week", "defteam", "play_type", "sack", "epa",
                "yardline_100", "rushing_yards", "air_yards"]
@@ -37,21 +37,35 @@ PBP_COLUMNS = ["season", "week", "defteam", "play_type", "sack", "epa",
 class BacktestInputs:
     stats: pl.DataFrame      # player-weeks with fantasy_points + rolling features
     skew: pl.DataFrame
-    epa: pl.DataFrame
+    epa: pl.DataFrame | None
     scoring: ScoringSettings
+    rolling_windows: dict[str, int]
 
 
-def load_inputs(scoring: ScoringSettings, seasons: list[int] = LOAD_SEASONS, window: int = WINDOW) -> BacktestInputs:
-    stats = load_player_stats(seasons)
-    stats = calculate_points_vectorized(stats, scoring)
-    stats = add_rolling_features(stats, window=window)
+def load_inputs(
+        scoring: ScoringSettings,
+        seasons: list[int] = LOAD_SEASONS,
+        rolling_windows: int | dict[str, int] = POSITION_ROLLING_WINDOWS,
+        with_epa: bool = True,
+        base_stats: pl.DataFrame | None = None) -> BacktestInputs:
+    """
+    :param with_epa: skip the play-by-play load when only rolling_plus_skew is evaluated
+    :param base_stats: already-scored player stats to reuse (e.g. across a window grid)
+    """
+    stats = base_stats if base_stats is not None else \
+        calculate_points_vectorized(load_player_stats(seasons), scoring)
+    stats = add_rolling_features(stats, window=rolling_windows)
 
     skew = calculate_all_position_skews(stats, pull_team_games(seasons))
 
-    pbp = pl.concat([load_pbp_data(s).select(PBP_COLUMNS) for s in seasons], how="vertical_relaxed")
-    epa = calculate_epa_allowed(pbp)
+    epa = None
+    if with_epa:
+        pbp = pl.concat([load_pbp_data(s).select(PBP_COLUMNS) for s in seasons], how="vertical_relaxed")
+        epa = calculate_epa_allowed(pbp)
 
-    return BacktestInputs(stats=stats, skew=skew, epa=epa, scoring=scoring)
+    windows = rolling_windows if isinstance(rolling_windows, dict) else \
+        {p: rolling_windows for p in stats["position"].unique().drop_nulls().to_list()}
+    return BacktestInputs(stats=stats, skew=skew, epa=epa, scoring=scoring, rolling_windows=windows)
 
 
 def loso_folds(full_seasons: list[int] = FULL_SEASONS, partial: int | None = PARTIAL_SEASON) -> list[tuple]:
@@ -79,6 +93,6 @@ def predict_fold(
         for pos, name in impls.items() if name == "stat_vector"
     }
     ctx = ExpectedPointsContext(skew_df=inputs.skew, epa_df=inputs.epa, scoring=inputs.scoring,
-                                stat_vector_models=models)
+                                stat_vector_models=models, rolling_windows=inputs.rolling_windows)
     preds = calculate_expected_points(inputs.stats, ctx, position_implementations)
     return preds.filter(pl.col("season") == test_season), models

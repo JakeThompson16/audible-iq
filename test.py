@@ -9,7 +9,7 @@ import polars as pl
 
 from clients.sleeper_client import get_user, get_user_leagues
 from domain.scoring import ScoringSettings
-from engine.expected_points import POSITION_IMPLEMENTATIONS
+from engine.expected_points import POSITION_IMPLEMENTATIONS, POSITION_ROLLING_WINDOWS
 from engine.metrics import POSITIONS, evaluate_projections
 from evaluation.backtest import load_inputs, loso_folds, predict_fold
 
@@ -21,7 +21,8 @@ print(f"User: {user['display_name']} (id: {user['user_id']})")
 league = get_user_leagues(user["user_id"], season)[1]
 scoring_settings = ScoringSettings.from_dict(league["scoring_settings"])
 print(f"Scoring settings from league: {league['name']}")
-print(f"Implementations: {POSITION_IMPLEMENTATIONS}\n")
+print(f"Implementations: {POSITION_IMPLEMENTATIONS}")
+print(f"Rolling windows: {POSITION_ROLLING_WINDOWS}\n")
 
 
 def _fmt(x):
