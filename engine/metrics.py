@@ -52,27 +52,37 @@ def _projection_vs_baseline(df: pl.DataFrame) -> dict:
     }
 
 
+def _monotonic_increasing(values: list) -> bool:
+    return all(v is not None for v in values) and all(a <= b for a, b in zip(values, values[1:]))
+
+
 def _calibration(df: pl.DataFrame) -> dict:
     by_tier = {}
     for tier in CONFIDENCE_TIERS:
         sub = df.filter(pl.col("confidence") == tier).with_columns(
             (pl.col("actual") - pl.col("projection")).alias("error")
         )
-        by_tier[tier] = _regression_metrics(sub, "error")
+        m = _regression_metrics(sub, "error")
+        # Absolute error scales with how many points a player scores, and the
+        # tiers differ in who they contain (high = regulars). Normalized MAE
+        # (MAE / mean actual points) removes that scale effect.
+        mean_actual = sub["actual"].mean() if sub.height else None
+        m["mean_actual"] = mean_actual
+        m["normalized_mae"] = (m["mae"] / mean_actual) if (m["mae"] is not None and mean_actual) else None
+        by_tier[tier] = m
 
     maes = [by_tier[t]["mae"] for t in CONFIDENCE_TIERS]
-    monotonic_decreasing_mae = (
-        all(m is not None for m in maes)
-        and all(a <= b for a, b in zip(maes, maes[1:]))
-    )
+    nmaes = [by_tier[t]["normalized_mae"] for t in CONFIDENCE_TIERS]
 
     return {
         "by_tier": by_tier,
-        "monotonic_decreasing_mae": monotonic_decreasing_mae,
+        "monotonic_decreasing_mae": _monotonic_increasing(maes),
+        "monotonic_decreasing_normalized_mae": _monotonic_increasing(nmaes),
         "note": (
-            "Confidence thresholds are provisional (see CLAUDE.md). Expect "
-            "MAE(high) <= MAE(medium) <= MAE(low) once calibrated — if this is "
-            "False, the tier thresholds need adjustment."
+            "Judge tiers on monotonic_decreasing_normalized_mae (MAE / mean actual "
+            "points). Raw MAE is inverted because higher tiers hold higher-scoring "
+            "players, so their absolute errors are larger (verified 2026-09-27, "
+            "OPEN_QUESTIONS Q-15)."
         ),
     }
 

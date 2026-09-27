@@ -189,7 +189,8 @@ Numbering is stable; don't renumber._
   vector (TE LOSO MAE 4.233 / R² 0.326 / Spearman 0.590 vs the old blended formula's
   4.282 / 0.301 / 0.573), so no production position carries the continuous-window cost.
 - **Update:** per-position window grid (`rolling_window_eval.py`, {8,10,12,14,16,20}, LOSO
-  mean MAE) set QB 12, WR 10, TE 12 in `POSITION_ROLLING_WINDOWS`. QB now ties the old blend
+  mean MAE) set QB 12, WR 10, TE 12 in `POSITION_ROLLING_WINDOWS` (QB later reselected to 14 under
+  the Spearman-first policy). QB now ties the old blend
   (MAE 7.894 vs 7.893) with better R² (0.216 vs 0.202) and Spearman (0.483 vs 0.473). WR
   (4.700 vs 4.661) and TE (4.321 vs 4.282) remain ~0.04 MAE behind. WR's curve is flat
   (10/12/14 within 0.007). WR then moved to the stat vector (MAE 4.689 / R² 0.344 /
@@ -209,27 +210,39 @@ Numbering is stable; don't renumber._
 
 ### Q-14. QB stat vector — EVALUATED, NOT SWITCHED (2026-09-27)
 - **Result (LOSO 2019-2025, window 12):** MAE 7.911 / R² 0.238 / Spearman 0.483, bias -0.10, vs tuned
-  rolling+skew 7.895 / 0.220 / 0.487 (bias -0.31) and rolling alone 7.869 / 0.221 / 0.480. Fold
+  rolling+skew 7.895 / 0.220 / 0.487 at rolling window 12 (7.915 / 0.217 / 0.492 at the reselected
+  window 14, which widens the Spearman gap) (bias -0.31) and rolling alone 7.869 / 0.221 / 0.480. Fold
   wins vs current: R² 6/7, Spearman 2/7, MAE 4/7. Partial 2026 (weeks 1-4) worse. Fails the
   Spearman-first bar narrowly; QB stays on rolling_plus_skew.
 - **Passing matchup signal is real and correctly signed** (completion rate +, INT rate −, both 7/7).
 - **Candidate refinements:** (a) split scrambles vs designed runs (one rush volume + one ypc model
-  today); unverified hint: on a 2025 week-10 sample the stat vector's top QBs were pocket passers
-  (Herbert, Nix) where rolling had Jackson/Allen, which suggests rushing QBs may be under-projected.
+  today). **Checked 2026-09-27** (QBs split into thirds by rush attempts/game within each held-out
+  season): the week-10 "rushing QBs ranked lower" anecdote does NOT generalize as a league-wide rank
+  error. High-rushing QBs' mean percentile rank error is +0.034 (slightly over-ranked; current
+  formula +0.014). But two rushing-specific weaknesses are consistent: the stat vector under-projects
+  high-rushing QBs by +1.60 pts/game (current +0.68; worse in 7/7 folds), and it orders them worse
+  among themselves (Spearman 0.312 vs 0.363, current better in 6/7). The low-rushing third also
+  favours the current formula (0.539 vs 0.561); the middle third favours the stat vector (0.403 vs
+  0.375, 5/7). So improving the rush component (scramble split or better rushing rates) targets a
+  real gap and is the recommended next QB step.
   (b) predict fumbles / 2-pt: recomposing actual QB stats without them costs mean |gap| 0.47
   points/game (mean -0.17) for the tested league, far more than RB/WR/TE (0.04-0.11).
 
-### Q-15. Confidence-tier calibration still inverted — OPEN (2026-09-27)
-- **Recheck (pooled 2019-2025 held-out predictions, final registry):** MAE by tier high / medium /
-  low / insufficient: QB 7.857 / 7.756 / 7.923 / 8.292; RB 5.093 / 4.507 / 4.430 / 4.543; WR 4.926 /
-  4.561 / 4.450 / 4.678; TE 4.690 / 4.106 / 3.881 / 3.899. `monotonic_decreasing_mae` False for every
-  position and overall. `high` has the largest MAE everywhere except QB.
-- **Likely cause:** absolute-error scale. High-tier rows are regulars with larger point totals,
-  so their absolute errors are larger even if relative accuracy is better. MAE-by-tier can't
-  validate a games-played tier.
-- **Resolution path:** calibrate on a scale-free error (MAE / mean actual, or rank error within
-  week), or redefine confidence (e.g. by n_games_in_window and projection size) before the agent
-  relies on it.
+### Q-15. Confidence-tier calibration inverted on raw MAE — RESOLVED 2026-09-27 (scale effect, verified)
+- **Check (pooled 2019-2025 held-out predictions, final registry):** tier = MAE / mean actual points /
+  normalized MAE (MAE ÷ mean actual), high → medium → low → insufficient:
+  - QB 7.889/20.4/0.386 → 7.764/18.3/0.425 → 7.951/14.5/0.547 → 8.280/12.4/0.668
+  - RB 5.093/9.31/0.547 → 4.507/7.71/0.585 → 4.430/6.87/0.645 → 4.543/6.37/0.713
+  - WR 4.926/8.53/0.578 → 4.561/7.29/0.626 → 4.450/6.63/0.671 → 4.678/6.52/0.717
+  - TE 4.690/8.48/0.553 → 4.106/6.70/0.613 → 3.881/5.43/0.715 → 3.899/4.99/0.781
+- **Finding:** high-tier players score 30-55% more than low-tier ones, so raw MAE rises with tier
+  even though relative error falls. Normalized MAE is monotonically decreasing for every position
+  and overall (`monotonic_decreasing_normalized_mae` True). The tiers are correctly ordered.
+  The raw-MAE check was the wrong metric; `engine/metrics.py` now reports both and the note points
+  to the normalized one.
+- **Implication for the agent:** tiers are relative-uncertainty labels (expect errors of roughly
+  39-55% of a high-tier player's points vs 55-72% for low tier), not absolute point ranges.
+  Thresholds (4/8 games) are still hand-picked, not tuned.
 
 ### Q-10. Long-lived carry-overs (from CLAUDE.md / README) — DEFERRED
 - Confidence-tier thresholds are provisional; calibration was non-monotonic

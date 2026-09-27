@@ -30,13 +30,14 @@ a raw Sleeper call.
   rolling_avg_prior + opponent_skew. Backtest-validated only (Q-5 still open).
 - Continuous rolling windows everywhere (`projections/rolling_window.py`): player
   features, opponent skew, epa_allowed, stat-vector features. Per-position player
-  windows (QB 12, WR 10, TE 12, RB 8) recover QB fully; WR/TE ~0.04 MAE behind the
+  windows (QB 14, WR 10, TE 12, RB 8) recover QB fully; WR/TE ~0.04 MAE behind the
   old blend (Q-13).
 - Tool explanation reads `projection_method` (Q-6 explanation part fixed).
 - WR switched to the stat vector (branch `worktree-wr-stat-vector-tuned`): LOSO mean
   MAE 4.689 / R² 0.344 / Spearman 0.651 vs tuned current formula 4.697 / 0.321 / 0.635.
 - TE switched to the stat vector, QB evaluated but not switched (branch
-  `worktree-qb-te-stat-vector`, Q-14). Calibration still inverted (Q-15).
+  `worktree-qb-te-stat-vector`, Q-14). Confidence tiers verified correctly ordered on
+  normalized MAE (Q-15 resolved); QB rolling window reselected to 14.
 - Shared `common/frames.assert_unique_key`, applied at `load_player_metadata`
   (crosswalk duplicates fixed), `load_player_stats`, games/skew/epa/actuals joins.
 - LOSO harness `evaluation/backtest.py`; drivers `test.py`, `stat_vector_eval.py`.

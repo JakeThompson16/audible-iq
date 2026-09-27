@@ -253,8 +253,9 @@ ranking decision, so model and parameter choices prioritize mean LOSO
 - Report MAE and bias every time; a candidate that ranks better but is
   materially biased does not pass (boom/bust measures deviation from it).
 - The `POSITION_ROLLING_WINDOWS` grid predates this rule and was chosen on
-  MAE (QB 12, WR 10, TE 12); under this rule it would pick QB 14, WR 14,
-  TE 12. Not re-selected yet.
+  MAE (QB 12, WR 10, TE 12). QB was reselected to 14 under this rule. WR/TE
+  stay 10/12: they're on the stat vector, so their rolling average only feeds
+  skew and baselines.
 
 **Swappable implementations** (`engine/expected_points.py`, VISION.md / Q-2):
 `IMPLEMENTATIONS` maps a name to a function `(rows, ExpectedPointsContext) ->
@@ -275,9 +276,11 @@ context. This is a backtest-validated path only: there is no inference
 player-side `games_this_season` — not opponent_skew's `n_games`, not outcome
 volatility (volatility is boom/bust's job, not expected points'). Tiers:
 `insufficient_data` (0 games), `low` (<4), `medium` (<8), `high` (8+).
-Thresholds are provisional, not yet calibrated against actual MAE per
-bucket — `engine/metrics.py`'s calibration check confirms whether MAE comes
-out monotonically decreasing (high < medium < low) against real output;
+Thresholds are provisional. Calibration is judged on NORMALIZED MAE (MAE /
+mean actual points per tier), which is monotonically decreasing for every
+position (verified 2026-09-27, Q-15). Raw MAE is inverted only because
+higher tiers hold higher-scoring players; don't read that as miscalibration.
+`engine/metrics.py`'s calibration check reports both;
 retune the thresholds if it doesn't.
 
 Two known implications of this design, both deliberate — don't special-case
@@ -303,7 +306,7 @@ last season. There is no blend-weight formula; the evidence behind a value is
 the actual count of games in the window (`n_games_in_window`, skew/epa
 `n_games`), which also drives skew/epa shrinkage n / (n + k) and the
 `min_games` floor. Windows: player rolling features per position
-(`POSITION_ROLLING_WINDOWS`: QB 12, WR 10, TE 12, RB 8; LOSO grid over
+(`POSITION_ROLLING_WINDOWS`: QB 14, WR 10, TE 12, RB 8; LOSO grid over
 {8, 10, 12, 14, 16, 20}, lowest mean MAE), stat-vector features 8, opponent
 skew and epa_allowed 17 (one season of defense games, not tuned).
 - History (retired 2026-09-27): season-partitioned windows blended with last

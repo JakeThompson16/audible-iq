@@ -41,7 +41,7 @@ All numbers come from `engine/metrics.py` on a **leave-one-season-out** backtest
 - each season 2019-2025 is predicted by stat-vector models fit on the other six;
 - 2026 (weeks 1-3 so far) is a test-only fold;
 - one Sleeper league's scoring;
-- every rolling feature is a continuous trailing window that spans the season boundary (per-position player windows QB 12 / RB 8 / WR 10 / TE 12, 17 games for defenses).
+- every rolling feature is a continuous trailing window that spans the season boundary (per-position player windows QB 14 / RB 8 / WR 10 / TE 12, 17 games for defenses).
 
 Run `python test.py` (all positions + calibration), `python stat_vector_eval.py RB|WR|TE|QB [--grid] [--candidates]`, or `python rolling_window_eval.py`.
 
@@ -51,7 +51,7 @@ Selection policy: start/sit is a ranking decision, so choices prioritize mean Sp
 
 | Pos | Implementation | Window | MAE | R² | Spearman | Rolling-avg-alone MAE / R² |
 |---|---|---:|---:|---:|---:|---|
-| QB | rolling_avg_prior + opponent_skew | 12 | 7.895 | 0.220 | 0.487 | 7.869 / 0.221 |
+| QB | rolling_avg_prior + opponent_skew | 14 | 7.915 | 0.217 | 0.492 | 7.897 / 0.218 |
 | RB | **stat vector** | 8 | **4.717** | **0.378** | **0.686** | 4.733 / 0.349 |
 | WR | **stat vector** | 10 | **4.690** | **0.344** | **0.651** | 4.692 / 0.326 |
 | TE | **stat vector** | 10 (stat-vector) | **4.233** | **0.326** | **0.590** | 4.286 / 0.301 |
@@ -60,28 +60,28 @@ The Window column is the rolling-average window, except for TE, where it's the s
 
 On corrected data, opponent_skew doesn't beat rolling-average-alone at any position; it now only feeds QB (OPEN_QUESTIONS Q-4).
 
-**Confidence calibration** (MAE by tier, pooled held-out 2019-2025, high / medium / low / insufficient):
+**Confidence calibration** (pooled held-out 2019-2025, high / medium / low / insufficient):
 
-| Pos | MAE by tier |
-|---|---|
-| QB | 7.857 / 7.756 / 7.923 / 8.292 |
-| RB | 5.093 / 4.507 / 4.430 / 4.543 |
-| WR | 4.926 / 4.561 / 4.450 / 4.678 |
-| TE | 4.690 / 4.106 / 3.881 / 3.899 |
+| Pos | MAE | Mean actual points | Normalized MAE (MAE ÷ mean actual) |
+|---|---|---|---|
+| QB | 7.889 / 7.764 / 7.951 / 8.280 | 20.4 / 18.3 / 14.5 / 12.4 | **0.386 / 0.425 / 0.547 / 0.668** |
+| RB | 5.093 / 4.507 / 4.430 / 4.543 | 9.31 / 7.71 / 6.87 / 6.37 | **0.547 / 0.585 / 0.645 / 0.713** |
+| WR | 4.926 / 4.561 / 4.450 / 4.678 | 8.53 / 7.29 / 6.63 / 6.52 | **0.578 / 0.626 / 0.671 / 0.717** |
+| TE | 4.690 / 4.106 / 3.881 / 3.899 | 8.48 / 6.70 / 5.43 / 4.99 | **0.553 / 0.613 / 0.715 / 0.781** |
 
-It's still not monotonic anywhere, most likely because absolute error scales with a player's usage (Q-15).
+Raw MAE looks inverted only because higher tiers hold higher-scoring players. Normalized by points scored, error falls monotonically from low to high confidence at every position, so the tiers are correctly ordered (Q-15, verified).
 
 ### Rolling window length (per position)
 
-`rolling_window_eval.py` grid-searches the continuous window for `rolling_plus_skew` (lowest mean LOSO MAE). Each cell is MAE / R² / Spearman, same rows; the weeks 1-3 column is MAE.
+`rolling_window_eval.py` grid-searches the continuous window for `rolling_plus_skew`. WR and TE were picked on mean MAE; QB was reselected under the later Spearman-first policy. Each cell is MAE / R² / Spearman, same rows; the weeks 1-3 column is MAE.
 
 | Pos | Chosen window | At chosen window | Window 8 | Old season blend | Weeks 1-3: chosen / 8 / blend |
 |---|---:|---|---|---|---|
-| QB | 12 | 7.894 / 0.216 / 0.483 | 7.925 / 0.208 / 0.475 | 7.893 / 0.202 / 0.473 | 8.060 / 8.187 / 8.078 |
+| QB | 14 | 7.913 / 0.213 / 0.488 | 7.925 / 0.208 / 0.475 | 7.893 / 0.202 / 0.473 | 8.035 / 8.187 / 8.078 |
 | WR | 10 | 4.700 / 0.321 / 0.635 | 4.709 / 0.314 / 0.634 | 4.661 / 0.332 / 0.644 | 5.086 / 5.145 / 5.063 |
 | TE | 12 | 4.321 / 0.295 / 0.569 | 4.344 / 0.283 / 0.564 | 4.282 / 0.301 / 0.573 | 4.555 / 4.644 / 4.481 |
 
-- QB recovers fully: it ties the old blend on MAE and beats it on R², Spearman, and early weeks.
+- QB: 12 was the MAE optimum (7.894, tying the old blend). 14 is the Spearman optimum and is what's configured: it gives up 0.02 MAE and beats the blend on R², Spearman and early weeks.
 - WR and TE stay about 0.04 MAE behind the old blend (Q-13).
 - WR's curve is flat: windows 10, 12 and 14 are within 0.007 MAE of each other.
 
@@ -177,7 +177,7 @@ The QB model has its own spec:
 
 Each cell is MAE / R² / Spearman.
 
-| Test season | Stat vector | rolling_avg_prior + opponent_skew (w=12) | Rolling alone |
+| Test season | Stat vector | rolling_avg_prior + opponent_skew (w=12; production now w=14) | Rolling alone (w=12) |
 |---|---|---|---|
 | 2019 | **8.063** / **0.191** / 0.424 | 8.166 / 0.156 / 0.424 | 8.197 / 0.146 / 0.396 |
 | 2020 | 8.129 / 0.275 / 0.519 | 7.869 / 0.299 / 0.542 | **7.825** / **0.304** / **0.543** |
@@ -189,11 +189,12 @@ Each cell is MAE / R² / Spearman.
 | **Mean (7 folds)** | 7.911 / **0.238** / 0.483 | 7.895 / 0.220 / **0.487** | **7.869** / 0.221 / 0.480 |
 | 2026 wk 1-4 (96 rows) | 8.575 / 0.152 / 0.305 | **8.284** / 0.162 / **0.317** | 8.291 / **0.165** / 0.316 |
 
+- At the production rolling window (14), the current formula averages 7.915 / 0.217 / 0.492, which widens the Spearman gap.
 - Better R² in 6 of 7 folds and smaller bias (−0.10 vs −0.31).
 - Spearman, the primary metric, is slightly worse (wins 2 of 7 folds), MAE is +0.016, and the early-season fold is worse. So QB stays on rolling_avg_prior + opponent_skew (OPEN_QUESTIONS Q-14).
 - The passing matchup terms are real and correctly signed: completion rate rises against weak pass defenses, and **interception rate falls** (a negative coefficient, significant in every fold, as expected).
 - Candidate refinements:
-  - split scrambles from designed runs;
+  - improve the rush component (e.g. split scrambles from designed runs). Segmenting QBs by rushing volume shows the stat vector under-projects high-rushing QBs by 1.6 points/game (current formula 0.7) and orders them worse among themselves (Spearman 0.312 vs 0.363). A week-10 hint that it ranks rushing QBs lower league-wide didn't hold up;
   - predict fumbles and 2-pt conversions, which currently cost QBs 0.47 points/game in recomposition.
 
 ### Continuous windows vs the old season blend

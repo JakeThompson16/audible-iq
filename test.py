@@ -63,9 +63,12 @@ for label, train, test in loso_folds():
 # games_this_season only; MAE should fall high < medium < low.
 pooled = evaluate_projections(pl.concat(full_fold_preds, how="diagonal_relaxed"), inputs.stats)
 print("===== confidence calibration, pooled 2019-2025 held-out predictions =====")
+print("  per tier: MAE / mean actual points / normalized MAE (MAE / mean actual), n")
 for position in POSITIONS + ["ALL"]:
     calib = pooled["calibration_overall"] if position == "ALL" else pooled["by_position"][position]["calibration"]
     tiers = calib["by_tier"]
     print(f"  {position:3s} " + "  ".join(
-        f"{t}={_fmt(tiers[t]['mae'])} (n={tiers[t]['n']})" for t in tiers)
-        + f"  monotonic_decreasing_mae={calib['monotonic_decreasing_mae']}")
+        f"{t}={_fmt(tiers[t]['mae'])}/{_fmt(tiers[t]['mean_actual'])}/{_fmt(tiers[t]['normalized_mae'])} (n={tiers[t]['n']})"
+        for t in tiers)
+        + f"  monotonic MAE={calib['monotonic_decreasing_mae']}"
+        + f"  monotonic normalized={calib['monotonic_decreasing_normalized_mae']}")
