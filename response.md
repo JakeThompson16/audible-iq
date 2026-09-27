@@ -1,162 +1,65 @@
-# Part 1 (RB finalize and merge) + Part 2 (WR stat vector)
+# Window tuning, merge check, tool explanation fix, WR switch
 
-**Short version:**
-- **RB:** Part 1 steps 1–7 are done, committed and pushed on `worktree-rb-stat-vector`
-  (commit `5481cce`).
-- **Step 8, the merge, needs you.** This session can't run git in your main checkout, and
-  background jobs don't merge on their own. It's a clean fast-forward; commands are at the
-  bottom.
-- **One finding you should see before merging:** the continuous-window change you asked for
-  makes the formula QB/WR/TE still use about 1% worse (details in step 1).
-- **WR:** the stat vector beats both baselines on R² and ranking. It's on
-  `worktree-wr-stat-vector`, not merged.
+**Summary:**
+- **Steps 1, 2 and 4** are done on `worktree-rb-stat-vector` (commits `75e1fc6`, `fac0d4b`,
+  pushed).
+- **Step 3:** I confirmed the merge is still a clean fast-forward, but **I didn't run it.**
+  This background session's rules forbid merging and pushing to main, and the sandbox
+  blocks git in your main checkout. The commands are below; nothing about them changed.
+- **Step 5:** WR still beats the newly tuned baseline, so it's switched to `stat_vector` on a
+  new branch, `worktree-wr-stat-vector-tuned` (commit `0c0c8fb`, pushed, not merged).
 
-## Part 1: RB
+## Step 1: window length per position
+- **Method:** same continuous-window utility, no blend weights. Grid {8, 10, 12, 14} plus 16
+  and 20, so an optimum at the edge of the grid would show up.
+- **Selection rule, stated before looking:** lowest mean MAE over the 7 full-season folds.
+  All variants are scored on the same rows.
+- **Reproduce:** `python rolling_window_eval.py`.
 
-### Step 1: continuous rolling window everywhere. Done, with a measured cost
-- **One shared utility.** `projections/rolling_window.py` (`trailing_mean`, `trailing_sum`,
-  `trailing_count`). It applies `.shift(1)`, is partitioned by player or defense only (so it
-  spans the season boundary), and has no blend weights. `n_games_in_window` is the real
-  number of games in the window.
-- **Used by everything:**
-  - player points and volume rolling averages (8 games)
-  - opponent skew (17 defense games)
-  - `epa_allowed` (17)
-  - every stat-vector feature
-- **Retired:** the effective-n proposal and the old `min(games/9, 0.9)` prior-season blend.
-  Both are recorded as history in `CLAUDE.md`.
-- **Cost:** for the incumbent `rolling_avg_prior + opponent_skew` formula, same rows, mean of
-  7 leave-one-season-out folds, the continuous window is worse than the old blend:
+Each cell is MAE / R² / Spearman (mean of 7 folds); the weeks 1–3 and 2026 columns are MAE.
 
-  | Position | MAE change | Weeks 1–3 MAE change | R² change |
-  |---|---|---|---|
-  | QB | +0.03 | +0.11 | +0.006 |
-  | RB | +0.06 | +0.16 | −0.017 |
-  | WR | +0.05 | +0.08 | −0.018 |
-  | TE | +0.06 | +0.16 | −0.018 |
+| Pos | Best window | At best window | Window 8 | Old blend | Weeks 1–3: best / 8 / blend | 2026 partial: best / 8 / blend |
+|---|---:|---|---|---|---|---|
+| QB | **12** | 7.894 / 0.216 / 0.483 | 7.925 / 0.208 / 0.475 | 7.893 / 0.202 / 0.473 | 8.060 / 8.187 / 8.078 | 8.342 / 8.108 / 8.232 |
+| WR | **10** | 4.700 / 0.321 / 0.635 | 4.709 / 0.314 / 0.634 | 4.661 / 0.332 / 0.644 | 5.086 / 5.145 / 5.063 | 4.783 / 4.789 / 4.700 |
+| TE | **12** | 4.321 / 0.295 / 0.569 | 4.344 / 0.283 / 0.564 | 4.282 / 0.301 / 0.573 | 4.555 / 4.644 / 4.481 | 4.643 / 4.847 / 4.591 |
 
-- **Likely cause:** the old blend leaned on a returning player's full prior season (about
-  17 games), not his last 8 games.
-- **A 12-game window** fully recovers QB (MAE 7.895 vs 7.893, with better R² and ranking),
-  but WR/TE stay about 0.04 MAE worse. I left the window at 8 (untuned) and logged it as
-  **Q-13**.
-- **RB isn't affected in production,** since it no longer uses this formula. QB/WR/TE are.
-  Your call before merging: accept it, tune the player window, or move WR/TE to the stat
-  vector (Part 2 suggests WR would come out ahead).
+- **QB fully recovers at 12.** MAE ties the old blend, and R², Spearman and weeks 1–3 all
+  beat it. The 76-row 2026 fold is worse, but it's too small to tune on.
+- **WR and TE recover a third to a half of the gap.** They're still about 0.04 MAE behind
+  the old blend.
+- **WR's curve is flat:** 10, 12 and 14 are within 0.007 MAE, and 14 is best on R² and
+  Spearman. I stuck to the MAE rule.
+- **Where the optimum is on other metrics:** Spearman peaks at 14 for QB and WR, 12 for TE.
+- **RB stays at 8.** It's on the stat vector, so its rolling average only feeds the baselines.
 
-### Step 2: early season (2026 weeks 1–3, 175 RB rows)
-Each cell is MAE / R² / Spearman:
+## Step 2: per-position windows as config
+- **Registry:** `POSITION_ROLLING_WINDOWS = {"QB": 12, "RB": 8, "WR": 10, "TE": 12}` sits next
+  to `POSITION_IMPLEMENTATIONS` in `engine/expected_points.py`.
+- **Context:** `ExpectedPointsContext.rolling_windows` defaults to that mapping.
+- **Features:** `add_rolling_features(window=<mapping>)` builds each position with its own
+  window and stamps a `rolling_window` column.
+- **Enforced, not trusted:** the engine rejects stats built with a different window. I tested
+  this: matching windows pass, and a shared 8 gets a clear `ValueError`.
+- **No position branches:** the window is a lookup (`replace_strict`), not an `if`.
+- **Harness:** `evaluation/backtest.load_inputs` uses the registry mapping by default.
+- **Full-engine backtest** (`test.py`), mean of 7 folds:
 
-| | New model | Current formula | Rolling alone |
-|---|---|---|---|
-| Before (last iteration) | 4.765 / 0.437 / 0.722 | 4.376 / 0.505 / 0.753 | 4.376 / 0.505 / 0.753 |
-| **Now** | 4.721 / 0.440 / **0.722** | 4.649 / 0.442 / 0.719 | **4.617** / **0.450** / 0.623 |
+  | Position | MAE | R² | Spearman |
+  |---|---:|---:|---:|
+  | QB | 7.895 | 0.220 | 0.487 |
+  | RB | 4.717 | 0.378 | 0.686 |
+  | WR (still rolling + skew at this point) | 4.697 | 0.321 | 0.635 |
+  | TE | 4.318 | 0.295 | 0.570 |
 
-- **The MAE gap closed from 0.39 to 0.07–0.10.** Mostly the baselines lost their
-  full-prior-season advantage; the new model only improved by 0.04.
-- **Ranking:** the new model now ties the current formula and is far ahead of
-  rolling-alone.
-- **Verdict:** the remaining ~0.1 MAE on 175 rows over three weeks is an honest information
-  ceiling, not something to chase. It's written up that way in the README.
-
-**Full-season folds** (new model vs current formula vs rolling alone):
-
-| Metric | New model | Current formula | Rolling alone |
-|---|---:|---:|---:|
-| Mean MAE | **4.717** | 4.769 | 4.733 |
-| Mean R² | **0.378** | 0.346 | 0.349 |
-| Mean Spearman | **0.685** | 0.663 | 0.668 |
-| Mean bias | −0.04 | | |
-
-Folds won by the new model (out of 7):
-
-| Metric | vs current formula | vs rolling alone |
-|---|---:|---:|
-| MAE | 5 | 5 |
-| R² | 7 | 6 |
-| Spearman | 7 | 7 |
-
-The final per-season table is in the README.
-
-### Step 3: confidence tiers unaffected. Confirmed
-Tiers still come only from `games_this_season`, computed in `engine/expected_points.py`
-from the stats rows, independent of any window. I ran the pipeline with the old and new
-rolling code: `games_this_season` and `confidence` are identical on all 141,434 rows. The
-tier code is unchanged.
-
-### Step 4: shared `assert_unique_key`. Built and applied
-- **Where it lives:** `common/frames.py` has `assert_unique_key(df, keys, name)` and
-  `assert_no_fanout`. The earlier local checks (skew, `epa_allowed`, the RB driver) were
-  replaced with it.
-- **Applied at:**
-  - `load_player_metadata`: the Hamilton/Moore bug, now fixed
-  - `load_players`
-  - `load_player_stats` output
-  - games → skew join
-  - skew → engine join
-  - `epa_allowed` → player join
-  - actuals → `evaluate_projections`
-  - the engine's projection assembly
-- **Root cause:** the dynastyprocess crosswalk maps about 10 `gsis_id`s to two rows, sometimes
-  two different people. `load_player_metadata` now keeps the row whose name matches
-  nflverse's record, then prefers one with a Sleeper ID, then asserts uniqueness.
-- **Also moved** the nflreadpy crosswalk URL patch into `clients/nflreadpy/player_data.py`,
-  so callers no longer need `test.py`'s copy.
-
-### Step 5: RB wired in through a registry. Done
-- **`engine/expected_points.py`:**
-  - `IMPLEMENTATIONS = {"rolling_plus_skew": fn, "stat_vector": fn}`
-  - `POSITION_IMPLEMENTATIONS = {"QB": "rolling_plus_skew", "RB": "stat_vector", "WR":
-    "rolling_plus_skew", "TE": "rolling_plus_skew"}`
-  - No position `if` branches.
-- **Signature:** `calculate_expected_points(stats_df, context, position_implementations=None)`.
-  - `ExpectedPointsContext` carries `skew_df`, `epa_df`, `scoring`, and fitted models; the
-    engine never fits anything.
-  - Per-call overrides are how the harness scores the old formula for comparison.
-- **Output:** adds `projection_method` and keeps every column the tools layer reads.
-- **Stat vector generalized** into `stat_vector/core.py` (`StatVectorSpec`,
-  `fit_stat_vector`, `StatVectorModel`); RB is just `RB_SPEC`.
-- **Removed** the rejected variants (constant and season-to-date rates, the legacy
-  EPA-in-volume spec).
-- **Harness:** `evaluation/backtest.py` (`load_inputs`, `loso_folds`, `predict_fold`) is used
-  by `test.py` (all positions through the production registry) and by
-  `stat_vector_eval.py <POS>`. `rb_stat_vector_eval.py` was removed.
-- **Checked:** `test.py` runs end to end; its RB numbers match `stat_vector_eval.py RB`
-  exactly, and re-running gave identical output.
-
-### Step 6: scope. Confirmed
-`tools/expected_points.py` and `tools/registry.py` have no diff against main. The tool's
-explanation text still says "rolling + skew" even for RB rows. It doesn't break anything and
-is logged under Q-6.
-
-### Step 7: docs. Done
-- **CLAUDE.md:**
-  - final RB feature set
-  - per-position projection formula, including the explicit decision to accept fitted
-    coefficients for RB
-  - "Swappable implementations" pattern
-  - "Continuous rolling windows" section, with the retired blend and effective-n history
-    and the measured cost
-  - new modules
-  - crosswalk bug added to the known-bugs list
-- **README:** "Model Evaluation" rewritten with the final LOSO tables. The stale k-grid
-  tables were removed; they're in git history.
-- **OPEN_QUESTIONS:**
-  - **Q-11 resolved** (including Q-11b).
-  - **Q-4 updated:** docs rewritten; skew doesn't help at any position; the k grid is still
-    not re-run.
-  - **Q-5 explicitly still OPEN:** this is backtest-only, with no live projection path.
-  - **Q-6 note** about the tool's explanation text.
-  - **Q-12:** the effective-n proposal is superseded.
-  - **New Q-13:** the window cost.
-- **STATUS.md:** updated.
-
-### Step 8: merge. Needs you
-- **It's a clean fast-forward:** `main` (`afa22a6`) is an ancestor of the branch.
-- **Your uncommitted work is already inside it.** I compared all 17 dirty files in your main
-  checkout against the snapshot commit `ea60f13`, and every one matches. The only thing the
-  branch doesn't have is `prompt.txt` (plus `.pyc` churn and an empty `docs/`).
-- **In `C:\Users\jak3t\Audible IQ`:**
+## Step 3: merge. Clean fast-forward confirmed, not executed
+- **Fast-forward:** `main` (`afa22a6`) is an ancestor of `worktree-rb-stat-vector`, which is
+  now 7 commits ahead (tip `fac0d4b`).
+- **Your uncommitted work:** all 17 dirty files in your main checkout still match the
+  snapshot commit, so the merge loses nothing.
+- **Why I didn't run it:** this job's rules say background sessions never merge or push to
+  main. The worktree sandbox also refuses git commands aimed at your checkout.
+- **Run these in `C:\Users\jak3t\Audible IQ`** (same as before):
   ```
   git stash push -u -m "pre-rb-merge backup"
   git merge --ff-only worktree-rb-stat-vector
@@ -165,88 +68,83 @@ is logged under Q-6.
   git branch -d worktree-rb-stat-vector
   git push origin --delete worktree-rb-stat-vector
   ```
-- **After checking things look right,** run `git stash drop` to delete the backup.
-- **Keep the worktree** `.claude/worktrees/rb-stat-vector`: it's now on the WR branch. Remove
-  it with `git worktree remove .claude/worktrees/rb-stat-vector` after the WR review.
-- **If you've decided against continuous windows for QB/WR/TE (Q-13), tell me before
-  merging** and I'll change it on the branch first.
+  Then run `git stash drop` once everything looks right.
+- **What's included:** RB, the window tuning and the tool fix (step 4). To leave the tool fix
+  out, fast-forward to `75e1fc6` instead.
 
-## Part 2: WR stat vector (branch `worktree-wr-stat-vector`, not merged)
+## Step 4: tool explanation (Q-6). Fixed
+- **What changed:** `tools/expected_points.py` now picks its explanation from the row's
+  `projection_method` (`_METHOD_EXPLANATIONS`, same keys as the engine registry):
+  - **`rolling_plus_skew`:** "projection = rolling_avg_prior (12.30, last 12 games) +
+    opponent_skew (0.80) vs DAL."
+  - **`stat_vector`:** "projection = this league's scoring applied to a predicted stat line
+    (…per-attempt rates adjusted for DAL's EPA allowed). opponent_skew is not part of this
+    projection."
+- **Metadata:** now includes `projection_method` and `rolling_window`.
+- **Compatibility:** older outputs without the column fall back to the rolling text.
+- **Tested** with rows of both kinds, a rookie with no projection, and a legacy frame.
+- **Still open:** the rest of Q-6 (typed payload, per-tool confidence).
+- **Recorded in** OPEN_QUESTIONS and CLAUDE.md.
 
-- **Setup:** same structure as RB (`stat_vector/wr.py`), in `STAT_VECTOR_SPECS` for
-  evaluation only; still `rolling_plus_skew` in production.
-  - **Volume models:** targets and carries.
-  - **Rate models:** catch_rate, ypr and rec_td_rate use `epa_allowed_pass`; ypc and
-    rush_td_rate use `epa_allowed_rush`.
-  - **Rates** are attempt-weighted.
-  - **Recomposition:** through `calculate_points_vectorized` with `wr_receptions`.
-- **Unpredicted categories** cost 0.054 points/game on actual 2024/25 WR stats.
-- **Re-run:** `python stat_vector_eval.py WR --targets-epa`.
+## Step 5: WR against the tuned baseline. Switched
+- **Spec, as you asked:** `epa_allowed` is off for targets and on for catch_rate only among
+  the receiving rates. The yards-per-reception and TD-rate EPA terms stay in the spec as
+  `candidate_terms`: off by default, re-testable with `stat_vector_eval.py WR --candidates`.
+- **Rushing-side WR rates** keep `epa_allowed_rush` as originally specified; it's noise but
+  harmless.
+- **Baselines** below use the tuned WR window of 10.
 
-### Leave-one-season-out table
-Each cell is MAE / R² / Spearman.
+Each cell is MAE / R² / Spearman:
 
-| Test season | New model | Current formula | Rolling alone |
+| Test season | WR stat vector | Current formula (w=10) | Rolling alone (w=10) |
 |---|---|---|---|
-| 2019 | **4.836** / **0.325** / **0.657** | 4.885 / 0.287 / 0.625 | 4.911 / 0.288 / 0.625 |
-| 2020 | 4.956 / **0.317** / 0.641 | 4.956 / 0.307 / 0.642 | **4.932** / 0.312 / **0.646** |
-| 2021 | 4.773 / **0.348** / **0.669** | 4.776 / 0.327 / 0.659 | **4.750** / 0.338 / 0.667 |
-| 2022 | **4.747** / **0.337** / **0.628** | 4.791 / 0.298 / 0.608 | 4.786 / 0.301 / 0.613 |
-| 2023 | 4.556 / **0.368** / **0.643** | **4.532** / 0.347 / 0.622 | 4.548 / 0.350 / 0.623 |
-| 2024 | 4.614 / **0.347** / **0.659** | 4.594 / 0.321 / 0.647 | **4.560** / 0.331 / 0.652 |
-| 2025 | **4.344** / **0.362** / **0.660** | 4.405 / 0.311 / 0.632 | 4.373 / 0.319 / 0.636 |
-| **Mean** | **4.689** / **0.343** / **0.651** | 4.706 / 0.314 / 0.634 | 4.694 / 0.320 / 0.637 |
-| 2026 wk 1–3 (286 rows) | **4.745** / **0.328** / **0.595** | 4.775 / 0.293 / 0.561 | 4.755 / 0.301 / 0.580 |
+| 2019 | **4.836** / **0.325** / **0.657** | 4.906 / 0.287 / 0.628 | 4.941 / 0.287 / 0.628 |
+| 2020 | 4.959 / 0.317 / 0.640 | 4.954 / 0.314 / 0.643 | **4.926** / **0.319** / **0.646** |
+| 2021 | 4.772 / **0.349** / **0.669** | 4.785 / 0.330 / 0.659 | **4.762** / 0.339 / 0.665 |
+| 2022 | 4.747 / **0.337** / **0.628** | **4.736** / 0.311 / 0.618 | 4.741 / 0.314 / 0.623 |
+| 2023 | 4.557 / **0.367** / **0.644** | **4.543** / 0.353 / 0.626 | 4.574 / 0.354 / 0.625 |
+| 2024 | 4.611 / **0.348** / **0.659** | 4.570 / 0.328 / 0.641 | **4.543** / 0.338 / 0.646 |
+| 2025 | **4.345** / **0.362** / **0.660** | 4.388 / 0.324 / 0.630 | 4.358 / 0.333 / 0.637 |
+| **Mean** | **4.689** / **0.344** / **0.651** | 4.697 / 0.321 / 0.635 | 4.692 / 0.326 / 0.638 |
+| 2026 wk 1–3 | **4.745** / **0.328** / **0.595** | 4.772 / 0.287 / 0.561 | 4.782 / 0.291 / 0.560 |
 
-**Folds won by the new model (out of 7):**
+**Folds won by the stat vector (out of 7):**
 
 | Metric | vs current formula | vs rolling alone |
 |---|---:|---:|
-| R² | 7 | 7 |
+| R² | 7 | 6 |
 | Spearman | 6 | 6 |
-| MAE | 5 | 3 |
+| MAE | 3 | 3 |
 
-- **Mean bias:** +0.03, against +0.08 for the current formula and −0.14 for rolling-alone.
-- **Early season:** unlike RB, WR also wins the partial 2026 fold on every metric.
-- **Caveat:** these baselines carry the continuous-window cost from step 1. Against the old
-  blended formula (WR 4.661 / 0.332 / 0.644), the new model's MAE is 0.03 worse, while R²
-  and Spearman are still better.
+- **MAE:** it wins only 3 of 7 folds but has the lowest mean MAE of the three.
+- **Bias:** +0.03, against +0.04 for the current formula and −0.17 for rolling-alone.
+- **Your criterion is met:** R² and Spearman win at comparable-or-better MAE. So
+  `"WR": "stat_vector"` is flipped in `POSITION_IMPLEMENTATIONS`.
+- **Through the full engine:** WR 4.690 / 0.344 / 0.651; the other positions are unchanged.
+- **Candidate terms:** turning them on gives mean 4.690 / 0.343 / 0.651, no gain.
+  - targets EPA: −0.31 to +0.27, p ≥ 0.48 in every fold
+  - yards-per-reception EPA: significant in 1 of 7 folds
+  - TD-rate EPA: significant in 0 of 7 folds
+- **Stable coefficients:**
+  - targets trailing average 0.872–0.876
+  - catch rate × `epa_allowed_pass` +0.16 to +0.24, significant in all 7 folds
+- **CLAUDE.md** features only catch rate as a validated matchup finding. The other EPA terms
+  are described as off and not validated.
 
-### Coefficient stability across the 7 folds
+## Branches
+- **`worktree-rb-stat-vector`** (`fac0d4b`): ready to fast-forward into main. The merge
+  commands are in step 3.
+- **`worktree-wr-stat-vector-tuned`** (`0c0c8fb` plus this report): WR switch plus docs, on
+  top of the RB branch. After the RB merge it's a fast-forward too:
+  `git merge --ff-only worktree-wr-stat-vector-tuned`, then `git push origin main`.
+- **`worktree-wr-stat-vector`:** superseded. Delete it with
+  `git push origin --delete worktree-wr-stat-vector` and
+  `git branch -D worktree-wr-stat-vector`.
+- **The worktree** `.claude/worktrees/rb-stat-vector` is on the tuned WR branch.
 
-| Model | Term | Range | Positive in | p < .05 in |
-|---|---|---|---:|---:|
-| targets | trailing avg | 0.872–0.876 | 7 | 7 |
-| targets | delta | 0.228–0.253 | 7 | 7 |
-| carries | trailing avg | 0.70–0.78 | 7 | 7 |
-| carries | delta | 0.10–0.20 | 7 | 7 |
-| catch_rate | trailing rate | 0.245–0.257 | 7 | 7 |
-| catch_rate | **epa_allowed_pass** | **+0.164 to +0.237** | 7 | **7** |
-| ypr | trailing rate | 0.279–0.294 | 7 | 7 |
-| ypr | epa_allowed_pass | −0.55 to +2.78 | 6 | 1 |
-| rec_td_rate | trailing rate | 0.117–0.148 | 7 | 7 |
-| rec_td_rate | epa_allowed_pass | −0.007 to +0.040 | 6 | 0 |
-| ypc | all terms | noise (trailing rate negative, EPA −4.3 to +1.1) | – | 0 |
-| rush_td_rate | all terms | noise | – | 0 |
-
-- **Receiving efficiency persists much more for WRs than RBs.** The trailing-rate
-  coefficients are 0.13–0.29, against 0.05–0.16 for RBs, and every one is p < 1e-8.
-- **The matchup signal is in catch rate.** Weaker pass defenses reliably raise it; the EPA
-  terms on yards per reception and TD rate aren't reliable.
-- **The rushing side is noise, as expected.** It's harmless because WR carries are tiny.
-
-### Does `epa_allowed` belong in the targets volume model? No
-- **Coefficient:** −0.31 to +0.27, sign flips between folds, p = 0.48–0.89 in every fold.
-- **Accuracy:** mean MAE 4.690 vs 4.689, identical R² and Spearman.
-- **Conclusion:** target share among WRs doesn't follow the matchup either. Same conclusion
-  as RB, but tested here independently.
-
-**Stopping here as instructed:** WR is not merged and main is untouched. If you approve, the
-change is one line: `"WR": "stat_vector"` in `POSITION_IMPLEMENTATIONS`.
-
-## Decisions for you
-1. Q-13: keep continuous windows for QB/WR/TE despite about +0.03–0.06 MAE, or change it
-   before the RB merge?
-2. Run the merge commands above (or tell me what to change first).
-3. WR: approve the switch to the stat vector (with or without `epa_allowed` on yards per
-   reception and TD rate), or send back for changes.
+## Open items
+- **Q-13:** only TE is still about 0.04 MAE behind the old blend. Options: accept it, or
+  validate a TE stat vector next.
+- **Q-4:** opponent skew doesn't beat rolling-alone for QB or TE, and the k grid hasn't been
+  re-run.
+- **Q-5:** there's still no live projection path.
