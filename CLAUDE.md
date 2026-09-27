@@ -37,8 +37,9 @@ Layered to isolate external API/data-source dependencies from core logic:
   rolling feature. See "Continuous rolling windows" below.
 - `projections/expected_points/features/` — feature engineering for the
   projection model.
-  - `player_rolling.py` — trailing 8-game averages per player, spanning
-    seasons: `rolling_avg_prior` (fantasy points), `n_games_in_window`,
+  - `player_rolling.py` — trailing averages per player over a per-position
+    window (`POSITION_ROLLING_WINDOWS`), spanning seasons:
+    `rolling_avg_prior` (fantasy points), `n_games_in_window`, `rolling_window`,
     `trailing_opportunities_avg` (carries + targets combined — see below),
     `trailing_targets_avg`, `trailing_attempts_avg`.
   - `opponent_skew.py` — Adjusted Points Allowed (APA): opponent-adjusted
@@ -69,12 +70,15 @@ Layered to isolate external API/data-source dependencies from core logic:
   implementations" below): RB -> `stat_vector`, QB/WR/TE ->
   `rolling_plus_skew`. Adds `projection`, `projection_method`, and a
   `confidence` tier per row. `ExpectedPointsContext` carries skew_df,
-  epa_df, scoring, and fitted stat-vector models (fitting happens offline).
+  epa_df, scoring, fitted stat-vector models (fitting happens offline), and
+  `rolling_windows` (position -> window, default `POSITION_ROLLING_WINDOWS`);
+  the engine rejects stats whose `rolling_window` doesn't match.
 - `evaluation/backtest.py` — offline harness: `load_inputs()`,
   `loso_folds()` (leave-one-season-out over 2019-2025 + partial 2026),
   `predict_fold()` (fit stat-vector models on train seasons, run the engine).
   Drivers: `test.py` (all positions, production registry),
-  `stat_vector_eval.py <POS>` (new model vs current formula vs rolling alone).
+  `stat_vector_eval.py <POS>` (new model vs current formula vs rolling alone),
+  `rolling_window_eval.py` (per-position window grid for rolling_plus_skew).
 - `engine/metrics.py` — `evaluate_projections(predictions_df, actuals_df)`:
   offline evaluation only (not used at inference time). MAE/RMSE/mean
   error/R², reported for the full projection AND for the
@@ -93,7 +97,10 @@ Layered to isolate external API/data-source dependencies from core logic:
     adapter should read only `.value`.
   - `tools/expected_points.py` — `ExpectedPointsArgs` (gsis_id, week, season)
     + `get_expected_points()`, a thin lookup wrapper around a precomputed
-    `calculate_expected_points()` output, returning `ToolResult`.
+    `calculate_expected_points()` output, returning `ToolResult`. The
+    explanation is chosen by the row's `projection_method`
+    (`_METHOD_EXPLANATIONS`, same keys as engine `IMPLEMENTATIONS`); add an
+    entry when adding an implementation.
   - `tools/registry.py` — `TOOL_REGISTRY` dict, tool name -> {args_model,
     func, description}.
 - `config.py` — `PLAYER_METADATA` is the single canonical list of player
@@ -206,7 +213,10 @@ KEY + projection`, and `POSITION_IMPLEMENTATIONS` maps position -> name. Never
 add an inline `if position == ...` branch to pick a method. To move a position
 to the stat vector: add its `StatVectorSpec` to `STAT_VECTOR_SPECS`, validate
 with `stat_vector_eval.py <POS>` (LOSO, report bias and coefficient stability),
-then flip its entry in `POSITION_IMPLEMENTATIONS`. Per-call overrides
+then flip its entry in `POSITION_IMPLEMENTATIONS`. Per-position parameters
+of an implementation (e.g. `POSITION_ROLLING_WINDOWS` for rolling_plus_skew)
+are config next to the registry and carried in the context, never branches.
+Per-call overrides
 (`position_implementations={"RB": "rolling_plus_skew"}`) are how comparisons
 score the old formula. The engine never fits; fitted models arrive in the
 context. This is a backtest-validated path only: there is no inference
@@ -243,16 +253,19 @@ entity only, so it spans the season boundary freely. Week 1 uses the tail of
 last season. There is no blend-weight formula; the evidence behind a value is
 the actual count of games in the window (`n_games_in_window`, skew/epa
 `n_games`), which also drives skew/epa shrinkage n / (n + k) and the
-`min_games` floor. Windows: player features 8 games, opponent skew and
-epa_allowed 17 (one season of defense games). Neither is tuned.
+`min_games` floor. Windows: player rolling features per position
+(`POSITION_ROLLING_WINDOWS`: QB 12, WR 10, TE 12, RB 8; LOSO grid over
+{8, 10, 12, 14, 16, 20}, lowest mean MAE), stat-vector features 8, opponent
+skew and epa_allowed 17 (one season of defense games, not tuned).
 - History (retired 2026-09-27): season-partitioned windows blended with last
   season's full-season average at weight `min(games / 9, 0.9)`, and a
   proposed effective-n = n_games + (1 − w) · prior_games for epa shrinkage.
   Both were replaced by the continuous window for one consistent rule.
 - Measured cost for the incumbent `rolling_avg_prior + opponent_skew`
-  formula (LOSO means 2019-2025): MAE worse by +0.03 (QB), +0.06 (RB), +0.05 (WR),
-  +0.06 (TE); weeks 1-3 worse by +0.08 to +0.16. A 12-game player window
-  recovers QB fully but not WR/TE (~+0.04). Recorded in OPEN_QUESTIONS Q-13.
+  formula (LOSO means 2019-2025) at a shared 8-game window: MAE worse by +0.03
+  (QB), +0.06 (RB), +0.05 (WR), +0.06 (TE) vs the retired blend. After the
+  per-position window tuning: QB ties the blend (7.894 vs 7.893 MAE, better R²
+  and Spearman); WR (+0.039) and TE (+0.038) remain behind. OPEN_QUESTIONS Q-13.
 - Confidence tiers are unaffected (verified identical on all 141,434 rows).
 - True rookies with no prior games: `rolling_avg_prior`
   resolves to `None`, NOT a fabricated positional-average fallback. This is

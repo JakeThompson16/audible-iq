@@ -41,20 +41,34 @@ All numbers come from `engine/metrics.py` on a **leave-one-season-out** backtest
 - each season 2019-2025 is predicted by stat-vector models fit on the other six;
 - 2026 (weeks 1-3 so far) is a test-only fold;
 - one Sleeper league's scoring;
-- every rolling feature is a continuous trailing window that spans the season boundary (8 games for players, 17 for defenses).
+- every rolling feature is a continuous trailing window that spans the season boundary (per-position player windows QB 12 / RB 8 / WR 10 / TE 12, 17 games for defenses).
 
 Run `python test.py` (all positions) or `python stat_vector_eval.py RB`.
 
 ### Production engine, per position (mean of 7 full-season folds)
 
-| Pos | Implementation | MAE | R² | Spearman | Rolling-avg-alone MAE / R² |
-|---|---|---:|---:|---:|---|
-| QB | rolling_avg_prior + opponent_skew | 7.923 | 0.212 | 0.479 | 7.902 / 0.213 |
-| RB | **stat vector** | **4.717** | **0.378** | **0.685** | 4.733 / 0.349 |
-| WR | rolling_avg_prior + opponent_skew | 4.706 | 0.314 | 0.634 | 4.694 / 0.320 |
-| TE | rolling_avg_prior + opponent_skew | 4.342 | 0.283 | 0.564 | 4.303 / 0.289 |
+| Pos | Implementation | Window | MAE | R² | Spearman | Rolling-avg-alone MAE / R² |
+|---|---|---:|---:|---:|---:|---|
+| QB | rolling_avg_prior + opponent_skew | 12 | 7.895 | 0.220 | 0.487 | 7.869 / 0.221 |
+| RB | **stat vector** | 8 | **4.717** | **0.378** | **0.686** | 4.733 / 0.349 |
+| WR | rolling_avg_prior + opponent_skew | 10 | 4.697 | 0.321 | 0.635 | 4.692 / 0.326 |
+| TE | rolling_avg_prior + opponent_skew | 12 | 4.318 | 0.295 | 0.570 | 4.286 / 0.301 |
 
 On corrected data, opponent_skew doesn't beat rolling-average-alone at any position (OPEN_QUESTIONS Q-4). The confidence-tier calibration is still non-monotonic.
+
+### Rolling window length (per position)
+
+`rolling_window_eval.py` grid-searches the continuous window for `rolling_plus_skew` (lowest mean LOSO MAE). Each cell is MAE / R² / Spearman, same rows; the weeks 1-3 column is MAE.
+
+| Pos | Chosen window | At chosen window | Window 8 | Old season blend | Weeks 1-3: chosen / 8 / blend |
+|---|---:|---|---|---|---|
+| QB | 12 | 7.894 / 0.216 / 0.483 | 7.925 / 0.208 / 0.475 | 7.893 / 0.202 / 0.473 | 8.060 / 8.187 / 8.078 |
+| WR | 10 | 4.700 / 0.321 / 0.635 | 4.709 / 0.314 / 0.634 | 4.661 / 0.332 / 0.644 | 5.086 / 5.145 / 5.063 |
+| TE | 12 | 4.321 / 0.295 / 0.569 | 4.344 / 0.283 / 0.564 | 4.282 / 0.301 / 0.573 | 4.555 / 4.644 / 4.481 |
+
+- QB recovers fully: it ties the old blend on MAE and beats it on R², Spearman, and early weeks.
+- WR and TE stay about 0.04 MAE behind the old blend (Q-13).
+- WR's curve is flat: windows 10, 12 and 14 are within 0.007 MAE of each other.
 
 ### RB: stat vector vs current formula vs rolling alone
 
@@ -94,7 +108,7 @@ Known limitations:
 
 ### Continuous windows vs the old season blend
 
-The old early-season blend (current-season window mixed with last season's full average) was replaced by one continuous trailing window everywhere. For the incumbent formula this cost MAE:
+The old early-season blend (current-season window mixed with last season's full average) was replaced by one continuous trailing window everywhere. At a shared 8-game window this cost the incumbent formula MAE:
 
 | Position | MAE change |
 |---|---|
@@ -103,7 +117,7 @@ The old early-season blend (current-season window mixed with last season's full 
 | WR | +0.05 |
 | TE | +0.06 |
 
-The cost is larger in weeks 1-3 (+0.08 to +0.16). See OPEN_QUESTIONS Q-13.
+The cost was larger in weeks 1-3 (+0.08 to +0.16). Per-position window tuning (above) removes it for QB and reduces it for WR/TE. See OPEN_QUESTIONS Q-13.
 
 Earlier README results (the k grid search on 2024/25) were produced on a pipeline with the B-1..B-3 defects and the retired blend, and have been removed; they're in git history.
 

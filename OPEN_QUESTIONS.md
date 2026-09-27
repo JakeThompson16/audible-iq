@@ -87,10 +87,10 @@ Numbering is stable; don't renumber._
   backtest path.
 
 ### Q-6. ToolResult v2 for distributional outputs — OPEN
-- **Note 2026-09-27:** `tools/expected_points.py` was deliberately not touched in the RB merge.
-  Its explanation string still says `projection = rolling_avg_prior + opponent_skew`, which
-  is wrong for RB rows (`projection_method == "stat_vector"`). The engine output keeps every
-  column the tool reads, so it doesn't break; fix the explanation as part of ToolResult v2.
+- **Fixed 2026-09-27 (explanation only):** `tools/expected_points.py` now builds its
+  explanation from the row's `projection_method` (rolling_plus_skew vs stat_vector) and
+  reports `projection_method` / `rolling_window` in metadata. The rest of Q-6 (typed value
+  payload, per-tool confidence semantics) is still open.
 - **Cause:** `ToolResult` = scalar `value` (Any) + a single 4-tier
   `confidence` + free-text `explanation` + untyped `metadata`. Confidence's
   meaning (games played) is expected-points-specific; boom/bust has a
@@ -178,7 +178,12 @@ Numbering is stable; don't renumber._
   epa_allowed now use continuous 17-game windows, so week 1 already has prior-season games
   in the window and n = games actually in the window.
 
-### Q-13. Continuous windows cost the incumbent formula accuracy — OPEN (2026-09-27)
+### Q-13. Continuous windows cost the incumbent formula accuracy — PARTIALLY RESOLVED (2026-09-27)
+- **Update:** per-position window grid (`rolling_window_eval.py`, {8,10,12,14,16,20}, LOSO
+  mean MAE) set QB 12, WR 10, TE 12 in `POSITION_ROLLING_WINDOWS`. QB now ties the old blend
+  (MAE 7.894 vs 7.893) with better R² (0.216 vs 0.202) and Spearman (0.483 vs 0.473). WR
+  (4.700 vs 4.661) and TE (4.321 vs 4.282) remain ~0.04 MAE behind. WR's curve is flat
+  (10/12/14 within 0.007). Remaining options: accept, or move WR/TE to the stat vector.
 - **Cause:** replacing the season-partitioned window + prior-season blend with one continuous
   trailing window (per the 2026-09-27 instruction) made `rolling_avg_prior + opponent_skew`
   worse on LOSO 2019-2025: MAE +0.03 QB, +0.06 RB, +0.05 WR, +0.06 TE; weeks 1-3 +0.08 to

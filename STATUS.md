@@ -29,8 +29,10 @@ a raw Sleeper call.
   RB = stat vector (`projections/expected_points/stat_vector/`), QB/WR/TE =
   rolling_avg_prior + opponent_skew. Backtest-validated only (Q-5 still open).
 - Continuous rolling windows everywhere (`projections/rolling_window.py`): player
-  features, opponent skew, epa_allowed, stat-vector features. Costs the incumbent
-  formula ~0.03-0.06 MAE (Q-13).
+  features, opponent skew, epa_allowed, stat-vector features. Per-position player
+  windows (QB 12, WR 10, TE 12, RB 8) recover QB fully; WR/TE ~0.04 MAE behind the
+  old blend (Q-13).
+- Tool explanation reads `projection_method` (Q-6 explanation part fixed).
 - Shared `common/frames.assert_unique_key`, applied at `load_player_metadata`
   (crosswalk duplicates fixed), `load_player_stats`, games/skew/epa/actuals joins.
 - LOSO harness `evaluation/backtest.py`; drivers `test.py`, `stat_vector_eval.py`.

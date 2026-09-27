@@ -11,6 +11,28 @@ class ExpectedPointsArgs(BaseModel):
     season: int
 
 
+# How each engine implementation's projection is described to the agent.
+# Keyed by projection_method, same names as engine IMPLEMENTATIONS.
+_METHOD_EXPLANATIONS = {
+    "rolling_plus_skew": lambda r: (
+        f"projection = rolling_avg_prior ({r['rolling_avg_prior']:.2f}, last "
+        f"{r.get('rolling_window') or '?'} games) + opponent_skew ({r['opponent_skew']:.2f}) "
+        f"vs {r['opponent_team']}."
+    ),
+    "stat_vector": lambda r: (
+        f"projection = this league's scoring applied to a predicted stat line "
+        f"(stat vector: predicted carries/targets from recent usage, times "
+        f"per-attempt rates adjusted for {r['opponent_team']}'s EPA allowed). "
+        f"opponent_skew is not part of this projection."
+    ),
+}
+
+
+def _explain_method(method: str, row: dict) -> str:
+    explain = _METHOD_EXPLANATIONS.get(method)
+    return explain(row) if explain else f"projection produced by '{method}'."
+
+
 def get_expected_points(args: ExpectedPointsArgs, projections_df: pl.DataFrame) -> ToolResult:
     """
     :param args: identifies which player/week/season to look up
@@ -40,6 +62,10 @@ def get_expected_points(args: ExpectedPointsArgs, projections_df: pl.DataFrame) 
 
     projection = row["projection"]
     games_this_season = row["games_this_season"]
+    # Which engine implementation produced this row (engine/expected_points.py
+    # POSITION_IMPLEMENTATIONS). Older outputs without the column were all
+    # rolling_plus_skew.
+    method = row.get("projection_method") or "rolling_plus_skew"
 
     metadata = {
         "gsis_id": args.gsis_id,
@@ -47,7 +73,9 @@ def get_expected_points(args: ExpectedPointsArgs, projections_df: pl.DataFrame) 
         "season": args.season,
         "position": row["position"],
         "opponent_team": row["opponent_team"],
+        "projection_method": method,
         "rolling_avg_prior": row["rolling_avg_prior"],
+        "rolling_window": row.get("rolling_window"),
         "opponent_skew": row["opponent_skew"],
         "opponent_skew_n_games": row["opponent_skew_n_games"],
         "games_this_season": games_this_season,
@@ -58,18 +86,17 @@ def get_expected_points(args: ExpectedPointsArgs, projections_df: pl.DataFrame) 
             value=None,
             confidence=row["confidence"],
             explanation=(
-                f"No rolling average available yet for player {args.gsis_id} at "
-                f"week {args.week}, season {args.season} — insufficient trailing "
-                f"game history to compute rolling_avg_prior."
+                f"No projection available for player {args.gsis_id} at week "
+                f"{args.week}, season {args.season} — no prior games to build "
+                f"trailing features from ({method})."
             ),
             metadata=metadata,
         )
 
     explanation = (
-        f"projection = rolling_avg_prior ({row['rolling_avg_prior']:.2f}) + "
-        f"opponent_skew ({row['opponent_skew']:.2f}) vs {row['opponent_team']}. "
+        f"{_explain_method(method, row)} "
         f"Confidence reflects {games_this_season} game(s) played by this player "
-        f"this season — player-side sample size only, not opponent_skew's sample "
+        f"this season — player-side sample size only, not the matchup's sample "
         f"size or outcome volatility."
     )
 
