@@ -1,5 +1,5 @@
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 
 import numpy as np
 import polars as pl
@@ -29,6 +29,18 @@ class StatVectorSpec:
     models: dict
     # ScoringSettings per-position reception bonus column (rb_/wr_/te_receptions)
     reception_bonus_col: str
+    # target -> extra features that were evaluated but are OFF by default
+    # (not validated: unstable sign or not significant across folds). Kept so
+    # they can be re-tested on more data: spec.with_candidates().
+    candidate_terms: dict = field(default_factory=dict)
+
+    def with_candidates(self) -> "StatVectorSpec":
+        """This spec with every candidate term switched on (for re-testing only)."""
+        models = {
+            t: (feats + [c for c in self.candidate_terms.get(t, []) if c not in feats], den)
+            for t, (feats, den) in self.models.items()
+        }
+        return replace(self, models=models, candidate_terms={})
 
     @property
     def volume_targets(self) -> list[str]:

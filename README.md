@@ -10,8 +10,8 @@ Currently implemented:
 - **League-accurate scoring engine**: computes fantasy points via a vectorized dot product of each league's actual scoring settings against raw stat lines (supports PPR variants, TE premium, yardage/completion bonus thresholds, etc.)
 - **Validated**: scoring output cross-checked against real Sleeper league data (Trey McBride, full season) with exact matches
 - **Weekly point projection engine** with a per-position implementation registry:
-  - **RB**: a league-portable *stat vector* (predicted carries/targets and per-attempt rates, scored through the league's own settings).
-  - **QB/WR/TE**: a trailing 8-game average plus an opponent-adjusted matchup skew.
+  - **RB and WR**: a league-portable *stat vector* (predicted carries/targets and per-attempt rates, scored through the league's own settings).
+  - **QB/TE**: a trailing-game average (12 games) plus an opponent-adjusted matchup skew.
   - Every projection gets a confidence tier.
   - See [Model Evaluation](#model-evaluation).
 
@@ -33,7 +33,7 @@ This separation means adding a new platform (e.g. ESPN, Yahoo) or data source on
 
 ## Scope
 
-Currently focused on offensive skill positions (QB/RB/WR/TE). Kicker, team defense/IDP, and play-level long-touchdown bonus categories are intentionally out of scope, see code comments for details. The RB stat-vector projection also omits 2-pt conversions, first downs, fumbles, and yardage/carry threshold bonuses (they score 0).
+Currently focused on offensive skill positions (QB/RB/WR/TE). Kicker, team defense/IDP, and play-level long-touchdown bonus categories are intentionally out of scope, see code comments for details. The RB/WR stat-vector projections also omit 2-pt conversions, first downs, fumbles, and yardage/carry threshold bonuses (they score 0).
 
 ## Model Evaluation
 
@@ -43,7 +43,7 @@ All numbers come from `engine/metrics.py` on a **leave-one-season-out** backtest
 - one Sleeper league's scoring;
 - every rolling feature is a continuous trailing window that spans the season boundary (per-position player windows QB 12 / RB 8 / WR 10 / TE 12, 17 games for defenses).
 
-Run `python test.py` (all positions) or `python stat_vector_eval.py RB`.
+Run `python test.py` (all positions), `python stat_vector_eval.py RB|WR`, or `python rolling_window_eval.py`.
 
 ### Production engine, per position (mean of 7 full-season folds)
 
@@ -51,7 +51,7 @@ Run `python test.py` (all positions) or `python stat_vector_eval.py RB`.
 |---|---|---:|---:|---:|---:|---|
 | QB | rolling_avg_prior + opponent_skew | 12 | 7.895 | 0.220 | 0.487 | 7.869 / 0.221 |
 | RB | **stat vector** | 8 | **4.717** | **0.378** | **0.686** | 4.733 / 0.349 |
-| WR | rolling_avg_prior + opponent_skew | 10 | 4.697 | 0.321 | 0.635 | 4.692 / 0.326 |
+| WR | **stat vector** | 10 | **4.690** | **0.344** | **0.651** | 4.692 / 0.326 |
 | TE | rolling_avg_prior + opponent_skew | 12 | 4.318 | 0.295 | 0.570 | 4.286 / 0.301 |
 
 On corrected data, opponent_skew doesn't beat rolling-average-alone at any position (OPEN_QUESTIONS Q-4). The confidence-tier calibration is still non-monotonic.
@@ -103,8 +103,32 @@ Earlier iterations tested and rejected: unweighted rate fits (under-project by 0
 
 Known limitations:
 - 2-pt conversions, first downs, fumbles, and 100/200-yard / 20-carry bonuses are not predicted and score 0 (about 0.11 points/game on actual RB stats for the tested league).
-- RB only so far.
+- RB and WR only; QB/TE still use the rolling formula.
 - This is a backtest-validated path; there is no live upcoming-week projection path yet.
+
+### WR: stat vector vs current formula vs rolling alone
+
+Same structure as RB: targets and carries volume models, five attempt-weighted rate models. `epa_allowed_pass` is on for catch rate only, the one receiving matchup term significant in every fold. Baselines use the tuned WR window (10). Each cell is MAE / R² / Spearman; same rows per fold.
+
+| Test season | Stat vector | rolling_avg_prior + opponent_skew | Rolling alone |
+|---|---|---|---|
+| 2019 | **4.836** / **0.325** / **0.657** | 4.906 / 0.287 / 0.628 | 4.941 / 0.287 / 0.628 |
+| 2020 | 4.959 / 0.317 / 0.640 | 4.954 / 0.314 / 0.643 | **4.926** / **0.319** / **0.646** |
+| 2021 | 4.772 / **0.349** / **0.669** | 4.785 / 0.330 / 0.659 | **4.762** / 0.339 / 0.665 |
+| 2022 | 4.747 / **0.337** / **0.628** | **4.736** / 0.311 / 0.618 | 4.741 / 0.314 / 0.623 |
+| 2023 | 4.557 / **0.367** / **0.644** | **4.543** / 0.353 / 0.626 | 4.574 / 0.354 / 0.625 |
+| 2024 | 4.611 / **0.348** / **0.659** | 4.570 / 0.328 / 0.641 | **4.543** / 0.338 / 0.646 |
+| 2025 | **4.345** / **0.362** / **0.660** | 4.388 / 0.324 / 0.630 | 4.358 / 0.333 / 0.637 |
+| **Mean (7 folds)** | **4.689** / **0.344** / **0.651** | 4.697 / 0.321 / 0.635 | 4.692 / 0.326 / 0.638 |
+| 2026 wk 1-3 (286 rows) | **4.745** / **0.328** / **0.595** | 4.772 / 0.287 / 0.561 | 4.782 / 0.291 / 0.560 |
+
+How the stat vector compares over the 7 folds:
+- vs the current formula: better R² in 7, Spearman in 6, MAE in 3;
+- vs rolling alone: better R² in 6, Spearman in 6, MAE in 3;
+- lowest mean MAE of the three;
+- mean bias +0.03 (current formula +0.04, rolling alone −0.17).
+
+Coefficients are stable across folds (targets trailing average 0.872-0.876; catch rate × `epa_allowed_pass` +0.16 to +0.24, significant in every fold). `epa_allowed` in the targets model and in yards/reception and TD rate was tested and left off (not significant or unstable sign).
 
 ### Continuous windows vs the old season blend
 

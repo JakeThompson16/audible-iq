@@ -183,7 +183,9 @@ Numbering is stable; don't renumber._
   mean MAE) set QB 12, WR 10, TE 12 in `POSITION_ROLLING_WINDOWS`. QB now ties the old blend
   (MAE 7.894 vs 7.893) with better R² (0.216 vs 0.202) and Spearman (0.483 vs 0.473). WR
   (4.700 vs 4.661) and TE (4.321 vs 4.282) remain ~0.04 MAE behind. WR's curve is flat
-  (10/12/14 within 0.007). Remaining options: accept, or move WR/TE to the stat vector.
+  (10/12/14 within 0.007). WR then moved to the stat vector (MAE 4.689 / R² 0.344 /
+  Spearman 0.651 vs tuned current formula 4.697 / 0.321 / 0.635), so only TE is still
+  affected. Remaining options for TE: accept, or validate a TE stat vector.
 - **Cause:** replacing the season-partitioned window + prior-season blend with one continuous
   trailing window (per the 2026-09-27 instruction) made `rolling_avg_prior + opponent_skew`
   worse on LOSO 2019-2025: MAE +0.03 QB, +0.06 RB, +0.05 WR, +0.06 TE; weeks 1-3 +0.08 to

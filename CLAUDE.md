@@ -61,13 +61,15 @@ Layered to isolate external API/data-source dependencies from core logic:
   - `core.py` — shared machinery: `StatVectorSpec` (per-position model
     spec), OLS/WLS fitting, `fit_stat_vector()` (offline fit ->
     `StatVectorModel`), `StatVectorModel.predict_points()`.
-  - `rb.py` — `RB_SPEC` (validated, in production for RB). `specs.py` —
-    `STAT_VECTOR_SPECS`, positions with a spec.
+  - `rb.py` — `RB_SPEC`, `wr.py` — `WR_SPEC` (both validated, in
+    production). `specs.py` — `STAT_VECTOR_SPECS`. A spec's
+    `candidate_terms` are evaluated-but-off features, re-testable with
+    `stat_vector_eval.py <POS> --candidates`.
 - `engine/expected_points.py` — `calculate_expected_points(stats_df,
   context, position_implementations=None)`. Joins opponent skew for every
   row (week/season/opponent_team/position), then dispatches each position to
   an implementation via `POSITION_IMPLEMENTATIONS` (see "Swappable
-  implementations" below): RB -> `stat_vector`, QB/WR/TE ->
+  implementations" below): RB/WR -> `stat_vector`, QB/TE ->
   `rolling_plus_skew`. Adds `projection`, `projection_method`, and a
   `confidence` tier per row. `ExpectedPointsContext` carries skew_df,
   epa_df, scoring, fitted stat-vector models (fitting happens offline), and
@@ -108,9 +110,9 @@ Layered to isolate external API/data-source dependencies from core logic:
 
 ## Key design decisions (with rationale — don't relitigate without reason)
 
-**Projection formula (per position)**: QB/WR/TE use
+**Projection formula (per position)**: QB/TE use
 `projection = rolling_avg_prior + opponent_skew`, deliberately simple and
-unfitted. RB uses the stat vector (fitted OLS volume + attempt-weighted rate
+unfitted. RB and WR use the stat vector (fitted OLS volume + attempt-weighted rate
 models, recomposed through league scoring). Adopting fitted coefficients for
 RB was an explicit decision on 2026-09-27 (Q-11b), made because the stat vector
 beat the incumbent on held-out seasons AND is league-portable. The original
@@ -197,6 +199,17 @@ seasons (+15.1 vs −1.0 on carries), and removing it changed LOSO mean MAE by
 0.001. With six training seasons, all five rate-model epa coefficients are
 positive in every fold (ypc p < 0.001).
 
+**WR stat vector** (`stat_vector/wr.py`, switched on 2026-09-27): same
+structure as RB (targets + carries volume, five rates). Validated finding:
+weaker pass defenses raise WR catch rate (`epa_allowed_pass` on catch_rate
++0.16 to +0.24, significant in all 7 LOSO folds). Unlike RB, WR receiving
+efficiency persists (trailing catch rate / ypr / rec-TD-rate coefficients
+0.13-0.29, all p < 1e-8). Off by default and NOT validated:
+`epa_allowed_pass` in the targets volume model (re-tested for WR, sign flips,
+p >= 0.48) and in ypr / rec_td_rate (significant in <= 1 of 7 folds); they are
+`candidate_terms`. Rushing-side WR rates keep `epa_allowed_rush` as
+specified but carry no signal (WR carries are tiny).
+
 **Stat-vector rate models are attempt-weighted by default** (`fit_models(weight_rates=True)`).
 Unweighted fits under-project RB by +0.31 pts/game on average (LOSO bias);
 weighted bias is −0.03, at a cost of +0.046 MAE. Replacing fitted rates with
@@ -265,7 +278,8 @@ skew and epa_allowed 17 (one season of defense games, not tuned).
   formula (LOSO means 2019-2025) at a shared 8-game window: MAE worse by +0.03
   (QB), +0.06 (RB), +0.05 (WR), +0.06 (TE) vs the retired blend. After the
   per-position window tuning: QB ties the blend (7.894 vs 7.893 MAE, better R²
-  and Spearman); WR (+0.039) and TE (+0.038) remain behind. OPEN_QUESTIONS Q-13.
+  and Spearman); TE (+0.038) remains behind; WR moved to the stat vector.
+  OPEN_QUESTIONS Q-13.
 - Confidence tiers are unaffected (verified identical on all 141,434 rows).
 - True rookies with no prior games: `rolling_avg_prior`
   resolves to `None`, NOT a fabricated positional-average fallback. This is

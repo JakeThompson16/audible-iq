@@ -74,7 +74,7 @@ IMPLEMENTATIONS: dict[str, Implementation] = {
 POSITION_IMPLEMENTATIONS: dict[str, str] = {
     "QB": "rolling_plus_skew",
     "RB": "stat_vector",
-    "WR": "rolling_plus_skew",
+    "WR": "stat_vector",
     "TE": "rolling_plus_skew",
 }
 DEFAULT_IMPLEMENTATION = "rolling_plus_skew"
@@ -82,8 +82,8 @@ DEFAULT_IMPLEMENTATION = "rolling_plus_skew"
 # Per-position continuous-window length (games) for rolling_avg_prior and the
 # trailing volume features — config, not an implementation branch. Chosen by
 # LOSO grid search over {8, 10, 12, 14, 16, 20} on mean MAE, 2019-2025
-# (README "Rolling window length"). RB stays 8: it is on stat_vector, and its
-# rolling_avg_prior only feeds skew and comparison baselines.
+# (README "Rolling window length"). RB stays 8. RB and WR are on stat_vector,
+# so their rolling_avg_prior only feeds skew and comparison baselines.
 POSITION_ROLLING_WINDOWS: dict[str, int] = {
     "QB": 12,
     "RB": 8,

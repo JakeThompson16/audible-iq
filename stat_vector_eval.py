@@ -2,12 +2,11 @@
 Stat-vector backtest for one position: new model vs current formula
 (rolling_avg_prior + opponent_skew) vs rolling-average-alone, leave-one-season-out.
 
-Run: python stat_vector_eval.py RB [--targets-epa]
-  --targets-epa  also fit a variant with epa_allowed_pass in the targets volume model
+Run: python stat_vector_eval.py RB [--candidates]
+  --candidates  also fit a variant with the spec's candidate_terms switched on
+                (terms evaluated but off by default, e.g. WR targets/ypr EPA)
 """
 import sys
-from dataclasses import replace
-
 import polars as pl
 
 from clients.sleeper_client import get_user, get_user_leagues
@@ -19,7 +18,7 @@ from projections.expected_points.stat_vector.core import KEY_COLUMNS, recompose_
 from projections.expected_points.stat_vector.specs import STAT_VECTOR_SPECS
 
 POSITION = sys.argv[1] if len(sys.argv) > 1 else "RB"
-TARGETS_EPA = "--targets-epa" in sys.argv
+CANDIDATES = "--candidates" in sys.argv
 SPEC = STAT_VECTOR_SPECS[POSITION]
 
 user = get_user("jakethompson16")
@@ -64,10 +63,8 @@ print(f"recomposing ACTUAL {POSITION} stats (2024/25): mean gap={_fmt(gap.mean()
 
 # ---- folds ----
 variant_specs = {}
-if TARGETS_EPA:
-    feats, den = SPEC.models["targets"]
-    variant_specs["targets+epa"] = replace(
-        SPEC, models={**SPEC.models, "targets": (feats + ["epa_allowed_pass"], den)})
+if CANDIDATES and SPEC.candidate_terms:
+    variant_specs["+candidates"] = SPEC.with_candidates()
 
 impl = {POSITION: "stat_vector"}
 results, models_by_fold = {}, {}
@@ -139,7 +136,9 @@ for target in SPEC.models:
     ))
 
 for vname in variant_specs:
-    print(f"\n===== variant {vname}: targets model epa_allowed_pass coefficient per fold =====")
-    for l in full:
-        s = models_by_fold[f"{l}|{vname}"].fits["targets"].summary().filter(pl.col("term") == "epa_allowed_pass")
-        print(f"  {l}: coef={_fmt(s['coef'][0])}  p={_fmt(s['p'][0])}")
+    for target, terms in SPEC.candidate_terms.items():
+        for term in terms:
+            print(f"\n===== variant {vname}: candidate {term} in [{target}] per fold =====")
+            for l in full:
+                s = models_by_fold[f"{l}|{vname}"].fits[target].summary().filter(pl.col("term") == term)
+                print(f"  {l}: coef={_fmt(s['coef'][0])}  p={_fmt(s['p'][0])}")

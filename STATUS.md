@@ -33,6 +33,8 @@ a raw Sleeper call.
   windows (QB 12, WR 10, TE 12, RB 8) recover QB fully; WR/TE ~0.04 MAE behind the
   old blend (Q-13).
 - Tool explanation reads `projection_method` (Q-6 explanation part fixed).
+- WR switched to the stat vector (branch `worktree-wr-stat-vector-tuned`): LOSO mean
+  MAE 4.689 / R² 0.344 / Spearman 0.651 vs tuned current formula 4.697 / 0.321 / 0.635.
 - Shared `common/frames.assert_unique_key`, applied at `load_player_metadata`
   (crosswalk duplicates fixed), `load_player_stats`, games/skew/epa/actuals joins.
 - LOSO harness `evaluation/backtest.py`; drivers `test.py`, `stat_vector_eval.py`.
