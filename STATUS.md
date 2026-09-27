@@ -36,7 +36,9 @@ a raw Sleeper call.
 - RB stat-vector projection (2026-09-26, experimental, standalone) —
   `projections/expected_points/features/epa_allowed.py`, `stat_rolling.py`,
   `projections/expected_points/stat_vector/rb.py`, driver `rb_stat_vector_eval.py`.
-  Roughly ties the current formula on held-out RB; promotion is Q-11.
+  Iteration 2 (2026-09-27): no epa in volume models, attempt-weighted rates, LOSO over
+  2019-2025. Best R² in 6/7 and Spearman in 5/7 folds, worse MAE than rolling-only in 5/7.
+  Promotion is Q-11.
 
 ## Not started
 NiceGUI app; boom/bust threshold + distribution; inference path; leaguemate

@@ -16,16 +16,30 @@ from projections.expected_points.features.stat_rolling import RATE_STATS
 # one league's scoring settings.
 #
 # target -> (features, denominator the target is a rate over, or None for volume).
-# Rush-side models use epa_allowed_rush, receiving-side models epa_allowed_pass.
+# Rush-side rate models use epa_allowed_rush, receiving-side epa_allowed_pass.
+# Volume models carry no matchup term: epa_allowed on carries flipped sign
+# between fits (+15.1 vs -1.0), and dropping it did not change recomposed
+# accuracy (see README "RB stat-vector projection").
 RB_MODELS = {
-    "carries":      (["roll_carries", "delta_carries", "epa_allowed_rush"], None),
-    "targets":      (["roll_targets", "delta_targets", "epa_allowed_pass"], None),
+    "carries":      (["roll_carries", "delta_carries"], None),
+    "targets":      (["roll_targets", "delta_targets"], None),
     "ypc":          (["roll_ypc", "delta_carries", "epa_allowed_rush"], "carries"),
     "rush_td_rate": (["roll_rush_td_rate", "delta_carries", "epa_allowed_rush"], "carries"),
     "catch_rate":   (["roll_catch_rate", "delta_targets", "epa_allowed_pass"], "targets"),
     "ypr":          (["roll_ypr", "delta_targets", "epa_allowed_pass"], "receptions"),
     "rec_td_rate":  (["roll_rec_td_rate", "delta_targets", "epa_allowed_pass"], "receptions"),
 }
+
+# First-iteration spec (epa_allowed in the volume models too), kept only so the
+# eval driver can report what removing it changed.
+LEGACY_RB_MODELS = {
+    **RB_MODELS,
+    "carries": (["roll_carries", "delta_carries", "epa_allowed_rush"], None),
+    "targets": (["roll_targets", "delta_targets", "epa_allowed_pass"], None),
+}
+
+VOLUME_TARGETS = [t for t, (_, den) in RB_MODELS.items() if den is None]
+RATE_TARGETS = [t for t, (_, den) in RB_MODELS.items() if den is not None]
 
 # Stat columns produced by predict_rb_stat_vector and scored downstream. Anything
 # calculate_points_vectorized maps that is NOT here (2-pt conversions, first
@@ -68,6 +82,30 @@ class OLSFit:
         for name, b in zip(self.features, self.coef[1:]):
             expr = expr + pl.col(name) * float(b)
         return expr
+
+
+@dataclass
+class ConstantRate:
+    """Rate 'model' with no regression: the pooled training-season RB rate."""
+    target: str
+    value: float
+
+    def predict(self, df: pl.DataFrame) -> pl.Expr:
+        return pl.lit(self.value)
+
+
+@dataclass
+class SeasonToDateRate:
+    """
+    Rate 'model' with no regression: the player's own season-to-date rate
+    (std_<rate>, prior games this season only), falling back to the pooled
+    training-season RB rate until the player has attempts this season.
+    """
+    target: str
+    fallback: float
+
+    def predict(self, df: pl.DataFrame) -> pl.Expr:
+        return pl.col(f"std_{self.target}").fill_null(self.fallback)
 
 
 def _design(df: pl.DataFrame, features: list[str]) -> np.ndarray:
@@ -138,27 +176,44 @@ def apply_rate_priors(df: pl.DataFrame, priors: dict[str, float]) -> pl.DataFram
     ])
 
 
-def fit_rb_models(train_df: pl.DataFrame, weight_rates: bool = False) -> dict[str, OLSFit]:
+def fit_rb_models(
+        train_df: pl.DataFrame,
+        weight_rates: bool = True,
+        models: dict = RB_MODELS) -> dict[str, OLSFit]:
     """
     :param train_df: RB player-week rows with stat_rolling + epa_allowed features
     :param weight_rates: weight each rate model's rows by its denominator
-        (carries / targets / receptions). Unweighted, a 1-carry game counts as
-        much as a 25-carry game, so the fitted "rate" is a per-game average
-        that runs below the per-carry rate actually multiplied by predicted
-        volume (2024 ypc: 4.18 per-game vs 4.39 pooled; rush TD rate: 0.027
-        vs 0.033). This biases recomposed points low.
+        (carries / targets / receptions). Default on. Unweighted, a 1-carry
+        game counts as much as a 25-carry game, so the fitted "rate" is a
+        per-game average that runs below the per-carry rate actually multiplied
+        by predicted volume (2024 ypc: 4.18 per-game vs 4.39 pooled; rush TD
+        rate: 0.027 vs 0.033), which biases recomposed points low.
+    :param models: model spec (RB_MODELS, or LEGACY_RB_MODELS for comparison)
     Rate models fit only on rows where the rate is defined (denominator > 0).
     """
     fits = {}
-    for target, (features, den) in RB_MODELS.items():
+    for target, (features, den) in models.items():
         rows = train_df if den is None else train_df.filter(pl.col(den) > 0)
         weight = den if (weight_rates and den is not None) else None
         fits[target] = fit_ols(rows, target, features, weight=weight)
     return fits
 
 
-def predict_rb_stat_vector(df: pl.DataFrame, fits: dict[str, OLSFit]) -> pl.DataFrame:
+def with_unfitted_rates(fits: dict, priors: dict[str, float], mode: str) -> dict:
     """
+    Replace the five fitted rate models with a no-regression rate, keeping the
+    fitted volume models. mode: "league" (ConstantRate at the pooled training
+    rate) or "season_to_date" (SeasonToDateRate, falling back to that rate).
+    """
+    cls = {"league": lambda t: ConstantRate(t, priors[t]),
+           "season_to_date": lambda t: SeasonToDateRate(t, priors[t])}[mode]
+    return {**fits, **{t: cls(t) for t in RATE_TARGETS}}
+
+
+def predict_rb_stat_vector(df: pl.DataFrame, fits: dict) -> pl.DataFrame:
+    """
+    :param fits: target -> anything with .predict(df) -> pl.Expr (OLSFit,
+        ConstantRate, SeasonToDateRate)
     :return: df with pred_<target> for every model, and the recomposed stat
         vector in RECOMPOSED_STAT_COLUMNS (derived by multiplication, not
         fitted), keyed by KEY_COLUMNS. A row is null wherever any input

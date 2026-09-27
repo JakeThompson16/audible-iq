@@ -131,6 +131,19 @@ Numbering is stable; don't renumber._
 - **Also found:** `epa_allowed_rush` on carries flips sign between fits (+15.1 p<0.001 vs
   −1.0 n.s.); the only matchup term stable in both directions is weighted ypc ×
   `epa_allowed_rush` (+3.7 / +5.7, p ≤ 0.03).
+- **Update 2026-09-27 (iteration 2):** epa removed from volume models (no accuracy change);
+  attempt-weighted rates made the default, answering (a). Evaluated leave-one-season-out over
+  2019-2025. The stat vector has the highest R² in 6/7 folds and the best Spearman in 5/7
+  vs both the current formula and rolling-only. MAE is worse than rolling-only in 5/7
+  folds (it's mean-unbiased on right-skewed points). 2024 is the only season where it
+  loses every metric. Constant rates lost in all 7 folds (league-average +0.032 MAE,
+  season-to-date +0.09). On the partial 2026 fold (weeks 1-3, 172 rows) it loses clearly
+  (MAE 4.765 vs 4.376): the early-season case needs a look before any promotion. (b) is
+  still open.
+- **Latent bug found:** `load_player_metadata` fans out rows for players listed twice in the
+  ID crosswalk (Justin Hamilton, Corey Moore: defensive players, only when loading pre-2023
+  seasons; 48 duplicate player-week keys over 2018-2026). No effect on QB/RB/WR/TE today;
+  the eval driver asserts RB keys are unique. Loader not changed.
 
 ### Q-12. PBP count reconciliation — ACCEPTED (2026-09-26)
 - Pass plays = `play_type == 'pass' & sack == 0` (nflfastR `pass_attempt` includes sacks,

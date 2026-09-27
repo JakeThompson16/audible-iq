@@ -23,8 +23,8 @@ from projections.expected_points.features.player_rolling import add_rolling_feat
 from projections.expected_points.features.epa_allowed import calculate_epa_allowed, join_epa_allowed
 from projections.expected_points.features.stat_rolling import add_stat_rolling_features
 from projections.expected_points.stat_vector.rb import (
-    RB_MODELS, KEY_COLUMNS, apply_rate_priors, fit_rb_models, predict_rb_stat_vector,
-    rate_priors, recompose_points, vif,
+    KEY_COLUMNS, LEGACY_RB_MODELS, RATE_TARGETS, VOLUME_TARGETS, apply_rate_priors,
+    fit_rb_models, predict_rb_stat_vector, rate_priors, recompose_points, with_unfitted_rates,
 )
 
 # Standalone comparison: RB stat-vector projection vs. the current
@@ -39,10 +39,22 @@ league = leagues[1]
 scoring_settings = ScoringSettings.from_dict(league["scoring_settings"])
 print(f"Scoring settings from league: {league['name']}\n")
 
-EVAL_SEASONS = [2024, 2025]
-LOAD_SEASONS = [2023] + EVAL_SEASONS
-WINDOWS = [4, 6, 8]
-DIRECTIONS = [(2024, 2025), (2025, 2024)]
+# 2018 is history only (prior-season blend + rolling windows for 2019).
+# 2019-2025 are full seasons, each held out once (leave-one-season-out).
+# 2026 is in progress: test-only fold, trained on 2019-2025.
+LOAD_SEASONS = list(range(2018, 2027))
+FULL_SEASONS = list(range(2019, 2026))
+PARTIAL_SEASON = 2026
+WINDOW = 8  # winning n from the first iteration's {4, 6, 8} grid
+
+FOLDS = (
+    [(f"{s} (LOSO)", [o for o in FULL_SEASONS if o != s], s) for s in FULL_SEASONS]
+    + [(f"{PARTIAL_SEASON} wk1-3 (partial)", FULL_SEASONS, PARTIAL_SEASON)]
+    + [("orig 2024->2025", [2024], 2025), ("orig 2025->2024", [2025], 2024)]
+)
+
+PBP_COLUMNS = ["season", "week", "defteam", "play_type", "sack", "epa",
+               "yardline_100", "rushing_yards", "air_yards"]
 
 
 def _fmt(x, d=3):
@@ -62,151 +74,133 @@ games = pull_team_games(LOAD_SEASONS)
 skew = calculate_all_position_skews(stats, games)
 current = calculate_expected_points(stats, skew)
 
-stats = stats.sort(["gsis_id", "season", "week"]).with_columns(
-    pl.col("fantasy_points").shift(1).over("gsis_id").alias("last_week_points")
+pbp = pl.concat(
+    [load_pbp_data(s).select(PBP_COLUMNS) for s in LOAD_SEASONS], how="vertical_relaxed"
 )
-
-pbp = load_pbp_data(LOAD_SEASONS)
 epa = calculate_epa_allowed(pbp)
+del pbp
 
-# ---- sanity checks ----
-print("===== sanity: epa_allowed =====")
-print(f"rows={epa.height}  unique keys asserted")
-print(epa.select(["epa_allowed_pass", "epa_allowed_rush"]).describe())
-print("n_games distribution (2024):",
-      epa.filter(pl.col("season") == 2024)["n_games"].value_counts().sort("n_games").rows())
-wk1 = epa.filter((pl.col("season") == 2024) & (pl.col("week") == 1))
-print(f"2024 week 1: {wk1.height} defenses, nonzero pass={int((wk1['epa_allowed_pass'] != 0).sum())}"
-      f" rush={int((wk1['epa_allowed_rush'] != 0).sum())} (should be nonzero: prior season blended in)")
-print("2023 week 1 (no prior season loaded; should be all 0):",
-      epa.filter((pl.col("season") == 2023) & (pl.col("week") == 1))["epa_allowed_pass"].abs().sum())
-print("softest / toughest pass D, 2025 final week present:")
-last = epa.filter(pl.col("season") == 2025).filter(pl.col("week") == pl.col("week").max().over("defteam"))
-print(last.sort("epa_allowed_pass").select(["defteam", "week", "epa_allowed_pass", "n_eff_pass"]).head(3))
-print(last.sort("epa_allowed_pass").select(["defteam", "week", "epa_allowed_pass", "n_eff_pass"]).tail(3))
+rb = join_epa_allowed(add_stat_rolling_features(stats, window=WINDOW), epa) \
+    .filter(pl.col("position") == "RB")
 
-print("\n===== sanity: season-boundary rolling (top-carry RB, 2024 tail -> 2025 head) =====")
-probe = add_stat_rolling_features(stats, window=8)
-top_rb = (stats.filter((pl.col("position") == "RB") & (pl.col("season") == 2024))
-          .group_by("gsis_id").agg(pl.col("carries").sum()).sort("carries").tail(1)["gsis_id"][0])
-print(probe.filter(pl.col("gsis_id") == top_rb)
-      .filter(((pl.col("season") == 2024) & (pl.col("week") >= 15)) | ((pl.col("season") == 2025) & (pl.col("week") <= 3)))
-      .select(["display_name", "season", "week", "carries", "roll_carries", "delta_carries", "roll_ypc"]))
+# load_player_metadata can fan out rows for players listed twice in the ID
+# crosswalk (seen for two defensive players when loading from 2018). Make sure
+# none of that reaches the RB rows.
+assert not rb.select(["gsis_id", "season", "week"]).is_duplicated().any(), \
+    "duplicate RB player-week rows (metadata fan-out)"
 
-print("\n===== sanity: recompose ACTUAL stats (what the excluded categories cost) =====")
-rb_actual = stats.filter((pl.col("position") == "RB") & pl.col("season").is_in(EVAL_SEASONS))
-recomp_actual = recompose_points(rb_actual, scoring_settings).rename({"fantasy_points": "recomposed"})
-cmp = recomp_actual.join(rb_actual.select(KEY_COLUMNS + ["fantasy_points"]), on=KEY_COLUMNS)
-gap = cmp["fantasy_points"] - cmp["recomposed"]
-print(f"RB rows={cmp.height}  mean(actual - recomposed_actual)={_fmt(gap.mean())}  "
-      f"mean|gap|={_fmt(gap.abs().mean())}  share exact={_fmt(float((gap.abs() < 1e-9).mean()))}")
-print("  (this is the ceiling cost of not predicting 2pt / first downs / fumbles / threshold bonuses)")
+print("===== data by season (RB player-weeks, epa_allowed defense-weeks) =====")
+print(rb.group_by("season").len().sort("season").join(
+    epa.group_by("season").len().rename({"len": "epa_rows"}), on="season").rows())
 
-# ---- grid ----
-METHODS = {
-    "stat_vector": "stat_vector_points",
-    "stat_vector (WLS rates)": "stat_vector_wls_points",
+# ---- variants ----
+VARIANTS = {
+    "v0 first iteration": "epa in volume, unweighted fitted rates",
+    "v1 step 1": "no epa in volume, unweighted fitted rates",
+    "v2 steps 1+3": "no epa in volume, attempt-weighted fitted rates",
+    "v3 league-avg rates": "v2 volume, rates = pooled training RB rate",
+    "v4 season-to-date rates": "v2 volume, rates = player season-to-date (league-avg fallback)",
+}
+BENCHMARKS = {
     "current (rolling+skew)": "current_projection",
     "rolling_avg_prior only": "rolling_avg_prior",
-    "naive mean": "naive_mean",
-    "last week": "last_week_points",
 }
 
-results = {}      # (n, train, test) -> {method: rb metrics}
-coef_tables = {}  # (n, train) -> {target: summary df}
-vif_tables = {}   # (n, train) -> {target: vif dict}
-wls_tables = {}   # (n, train) -> {rate target: (summary df, n_obs, weighted R2)}
+results = {}         # fold label -> {method: metrics}
+volume_coefs = {}    # fold label -> {target: {term: coef}}
+rate_epa_coefs = {}  # fold label -> {rate target: (coef, p)}
 
-for n in WINDOWS:
-    feat = join_epa_allowed(add_stat_rolling_features(stats, window=n), epa)
-    rb = feat.filter(pl.col("position") == "RB")
+for label, train_seasons, test in FOLDS:
+    tr = rb.filter(pl.col("season").is_in(train_seasons))
+    te = rb.filter(pl.col("season") == test)
 
-    for train, test in DIRECTIONS:
-        tr = rb.filter(pl.col("season") == train)
-        te = rb.filter(pl.col("season") == test)
+    priors = rate_priors(tr)
+    tr = apply_rate_priors(tr, priors)
+    te = apply_rate_priors(te, priors)
 
-        priors = rate_priors(tr)
-        tr = apply_rate_priors(tr, priors)
-        te = apply_rate_priors(te, priors)
+    v2 = fit_rb_models(tr)
+    fits = {
+        "v0 first iteration": fit_rb_models(tr, weight_rates=False, models=LEGACY_RB_MODELS),
+        "v1 step 1": fit_rb_models(tr, weight_rates=False),
+        "v2 steps 1+3": v2,
+        "v3 league-avg rates": with_unfitted_rates(v2, priors, "league"),
+        "v4 season-to-date rates": with_unfitted_rates(v2, priors, "season_to_date"),
+    }
 
-        fits = fit_rb_models(tr)
-        wls_fits = fit_rb_models(tr, weight_rates=True)
-        coef_tables[(n, train)] = {t: f.summary() for t, f in fits.items()}
-        coef_tables[(n, train)]["_n_r2"] = {t: (f.n, f.r2) for t, f in fits.items()}
-        wls_tables[(n, train)] = {t: (wls_fits[t].summary(), wls_fits[t].n, wls_fits[t].r2)
-                                  for t, (_, den) in RB_MODELS.items() if den is not None}
-        vif_tables[(n, train)] = {
-            t: vif(tr if den is None else tr.filter(pl.col(den) > 0), feats)
-            for t, (feats, den) in RB_MODELS.items()
+    volume_coefs[label] = {
+        t: dict(zip(["intercept"] + v2[t].features, v2[t].coef.tolist())) for t in VOLUME_TARGETS
+    }
+    rate_epa_coefs[label] = {}
+    for t in RATE_TARGETS:
+        s = v2[t].summary().filter(pl.col("term").str.starts_with("epa_allowed"))
+        rate_epa_coefs[label][t] = (s["coef"][0], s["p"][0])
+
+    frame = (
+        current.filter((pl.col("position") == "RB") & (pl.col("season") == test))
+        .select(KEY_COLUMNS + ["projection", "rolling_avg_prior", "confidence"])
+        .rename({"projection": "current_projection"})
+    )
+    for name, f in fits.items():
+        pts = recompose_points(predict_rb_stat_vector(te, f), scoring_settings) \
+            .select(KEY_COLUMNS + ["fantasy_points"]).rename({"fantasy_points": name})
+        frame = frame.join(pts, on=KEY_COLUMNS, how="inner")
+
+    methods = {**{v: v for v in VARIANTS}, **BENCHMARKS}
+    frame = frame.drop_nulls(subset=list(methods.values()))
+
+    results[label] = {}
+    for method, col in methods.items():
+        r = evaluate_projections(frame.with_columns(pl.col(col).alias("projection")), stats)
+        r = r["by_position"]["RB"]
+        results[label][method] = {
+            "n": r["n"],
+            "mae": r["projection"]["mae"],
+            "r2": r["projection"]["r2"],
+            "bias": r["projection"]["mean_error"],
+            "spearman": r["spearman_rank_correlation"]["mean"],
         }
 
-        pts = recompose_points(predict_rb_stat_vector(te, fits), scoring_settings) \
-            .select(KEY_COLUMNS + ["fantasy_points"]).rename({"fantasy_points": "stat_vector_points"})
-
-        pts_wls = recompose_points(predict_rb_stat_vector(te, wls_fits), scoring_settings) \
-            .select(KEY_COLUMNS + ["fantasy_points"]).rename({"fantasy_points": "stat_vector_wls_points"})
-
-        naive = tr["fantasy_points"].mean()
-
-        frame = (
-            current.filter((pl.col("position") == "RB") & (pl.col("season") == test))
-            .select(KEY_COLUMNS + ["projection", "rolling_avg_prior", "confidence"])
-            .rename({"projection": "current_projection"})
-            .join(pts, on=KEY_COLUMNS, how="inner")
-            .join(pts_wls, on=KEY_COLUMNS, how="inner")
-            .join(stats.select(KEY_COLUMNS + ["last_week_points"]), on=KEY_COLUMNS, how="left")
-            .with_columns(pl.lit(naive).alias("naive_mean"))
-            .drop_nulls(subset=list(METHODS.values()))
-        )
-
-        results[(n, train, test)] = {}
-        for method, col in METHODS.items():
-            preds = frame.with_columns(pl.col(col).alias("projection"))
-            r = evaluate_projections(preds, stats)["by_position"]["RB"]
-            results[(n, train, test)][method] = {
-                "n": r["n"],
-                "mae": r["projection"]["mae"],
-                "rmse": r["projection"]["rmse"],
-                "r2": r["projection"]["r2"],
-                "mean_error": r["projection"]["mean_error"],
-                "spearman": r["spearman_rank_correlation"]["mean"],
-            }
-
 # ---- report ----
-print("\n===== RB recomposed-points comparison (same rows per cell, unmodified evaluate_projections) =====")
-for (n, train, test), by_method in results.items():
-    print(f"\n--- window n={n}, train {train} -> test {test} (rows={by_method['stat_vector']['n']}) ---")
+print("\n===== variants =====")
+for v, desc in VARIANTS.items():
+    print(f"  {v:24s} {desc}")
+
+print("\n===== per-fold RB recomposed points (same rows per fold; bias = actual - predicted) =====")
+for label, by_method in results.items():
+    print(f"\n--- {label} (rows={by_method['v2 steps 1+3']['n']}) ---")
     for method, m in by_method.items():
-        print(f"  {method:24s} MAE={_fmt(m['mae'])}  RMSE={_fmt(m['rmse'])}  R2={_fmt(m['r2'])}  "
-              f"bias={_fmt(m['mean_error'])}  Spearman={_fmt(m['spearman'])}")
+        print(f"  {method:24s} MAE={_fmt(m['mae'])}  R2={_fmt(m['r2'])}  "
+              f"bias={_fmt(m['bias'])}  Spearman={_fmt(m['spearman'])}")
 
-print("\n===== winning n (stat_vector mean MAE across both directions; Spearman tie-break) =====")
-summary = []
-for n in WINDOWS:
-    maes = [results[(n, a, b)]["stat_vector"]["mae"] for a, b in DIRECTIONS]
-    sps = [results[(n, a, b)]["stat_vector"]["spearman"] for a, b in DIRECTIONS]
-    summary.append((n, sum(maes) / 2, sum(sps) / 2))
-    print(f"  n={n}: mean MAE={_fmt(summary[-1][1])}  mean Spearman={_fmt(summary[-1][2])}")
-best_n = sorted(summary, key=lambda s: (round(s[1], 3), -s[2]))[0][0]
-print(f"  winner: n={best_n}")
+loso = [label for label, *_ in FOLDS if "LOSO" in label]
+print("\n===== LOSO summary over", len(loso), "full-season folds =====")
+for method in list(VARIANTS) + list(BENCHMARKS):
+    maes = [results[l][method]["mae"] for l in loso]
+    sps = [results[l][method]["spearman"] for l in loso]
+    r2s = [results[l][method]["r2"] for l in loso]
+    print(f"  {method:24s} mean MAE={_fmt(sum(maes) / len(maes))}  mean R2={_fmt(sum(r2s) / len(r2s))}  "
+          f"mean Spearman={_fmt(sum(sps) / len(sps))}")
 
-pl.Config.set_tbl_rows(20)
-pl.Config.set_tbl_width_chars(140)
-pl.Config.set_float_precision(4)
-for n in WINDOWS:
-    for train, _ in DIRECTIONS:
-        print(f"\n===== coefficients: n={n}, fit on {train} =====")
-        n_r2 = coef_tables[(n, train)]["_n_r2"]
-        for target in RB_MODELS:
-            nobs, r2 = n_r2[target]
-            v = vif_tables[(n, train)][target]
-            print(f"\n[{target}]  n_obs={nobs}  in-sample R2={_fmt(r2)}  "
-                  f"VIF: " + ", ".join(f"{k}={_fmt(x, 2)}" for k, x in v.items()))
-            print(coef_tables[(n, train)][target])
+print("\n===== head-to-head: folds (of", len(loso), "LOSO) where the variant beats the benchmark =====")
+for v in VARIANTS:
+    parts = []
+    for b in BENCHMARKS:
+        mae_w = sum(results[l][v]["mae"] < results[l][b]["mae"] for l in loso)
+        sp_w = sum(results[l][v]["spearman"] > results[l][b]["spearman"] for l in loso)
+        parts.append(f"vs {b}: MAE {mae_w}/{len(loso)}, Spearman {sp_w}/{len(loso)}")
+    print(f"  {v:24s} " + " | ".join(parts))
 
-for n in WINDOWS:
-    for train, _ in DIRECTIONS:
-        print(f"\n===== WLS rate coefficients (weight = denominator): n={n}, fit on {train} =====")
-        for target, (summ, nobs, r2) in wls_tables[(n, train)].items():
-            print(f"\n[{target}]  n_obs={nobs}  weighted in-sample R2={_fmt(r2)}")
-            print(summ)
+print("\n===== v2 vs v3 vs v4 per LOSO fold (MAE / Spearman) =====")
+for l in loso:
+    print(f"  {l:12s} " + "  ".join(
+        f"{v.split()[0]}={_fmt(results[l][v]['mae'])}/{_fmt(results[l][v]['spearman'])}"
+        for v in ["v2 steps 1+3", "v3 league-avg rates", "v4 season-to-date rates"]))
+
+print("\n===== volume model coefficients per fold (v2; no epa) =====")
+for label, coefs in volume_coefs.items():
+    print(f"  {label:22s} " + "  |  ".join(
+        f"{t}: " + ", ".join(f"{k}={_fmt(c)}" for k, c in terms.items()) for t, terms in coefs.items()))
+
+print("\n===== epa_allowed coefficient in each weighted rate model, per fold: coef (p) =====")
+for label, coefs in rate_epa_coefs.items():
+    print(f"  {label:22s} " + "  ".join(f"{t}={_fmt(c)} ({_fmt(p)})" for t, (c, p) in coefs.items()))

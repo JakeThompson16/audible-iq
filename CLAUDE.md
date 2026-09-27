@@ -49,9 +49,11 @@ Layered to isolate external API/data-source dependencies from core logic:
     roll across the season boundary.
 - `projections/expected_points/stat_vector/rb.py` — EXPERIMENTAL, not
   wired into production. RB-only portable expected points: OLS volume
-  models (carries, targets) + rate models (ypc, rush_td_rate, catch_rate,
-  ypr, rec_td_rate), stats derived by multiplication, scored by the
-  unmodified `calculate_points_vectorized`. Never predicts fantasy points
+  models (carries, targets; trailing avg + usage delta, no matchup term) +
+  attempt-weighted rate models (ypc, rush_td_rate, catch_rate, ypr,
+  rec_td_rate; trailing rate + delta + epa_allowed), stats derived by
+  multiplication, scored by the unmodified `calculate_points_vectorized`.
+  Evaluated leave-one-season-out over 2019-2025 (plus partial 2026). Never predicts fantasy points
   directly (that locks the model to one league's scoring). Driver:
   `rb_stat_vector_eval.py`. Promotion is OPEN_QUESTIONS.md Q-11 (it
   introduces fitted coefficients, which the "no fitted model" decision
@@ -159,14 +161,25 @@ targets/carries when projecting. RB/WR use combined `opportunities`
 capture dual-usage players (e.g. Deebo Samuel, Curtis Samuel) who'd be
 undercounted by targets-only or carries-only filtering.
 
-**RB stat-vector matchup inputs** (`stat_vector/rb.py`): rush-side models
-(carries, ypc, rush_td_rate) use `epa_allowed_rush`; receiving-side models
-(targets, catch_rate, ypr, rec_td_rate) use `epa_allowed_pass`. This resolves
-the "should RB also get epa_allowed_pass?" question: yes, but only on the
-receiving-work models, since each model's matchup term should describe the
-play type that produces that stat. Mixing both into every model would just add
-noise terms. Rate models fit only on rows where the rate is defined
-(denominator > 0). A player with history but no attempts of a kind in the
+**RB stat-vector matchup inputs** (`stat_vector/rb.py`): matchup terms live
+in the rate models only. Rush-side rates (ypc, rush_td_rate) use
+`epa_allowed_rush`; receiving-side rates (catch_rate, ypr, rec_td_rate) use
+`epa_allowed_pass`. This resolves the "should RB also get epa_allowed_pass?"
+question: yes, but only on the receiving-work models, since each model's
+matchup term should describe the play type that produces that stat. Volume
+models (carries, targets) have no matchup term. It flipped sign between
+seasons (+15.1 vs −1.0 on carries), and removing it changed LOSO mean MAE by
+0.001. With six training seasons, all five rate-model epa coefficients are
+positive in every fold (ypc p < 0.001).
+
+**RB rate models are attempt-weighted by default** (`fit_rb_models(weight_rates=True)`).
+Unweighted fits under-project by +0.31 pts/game on average (LOSO bias); weighted
+bias is −0.03, at a cost of +0.046 MAE. Replacing fitted rates with constants was
+tested and lost in every fold: league-average rates cost +0.032 MAE,
+season-to-date rates +0.09 MAE. The loss is small but consistent, so fitted
+rates are the default pending review (OPEN_QUESTIONS Q-11). The constant option
+is kept in code (`with_unfitted_rates`) for comparison. Rate models fit only
+on rows where the rate is defined (denominator > 0). A player with history but no attempts of a kind in the
 window gets the pooled training-season RB rate for that `roll_<rate>`.
 Rookies with no history stay None.
 

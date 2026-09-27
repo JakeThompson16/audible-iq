@@ -25,6 +25,9 @@ def add_stat_rolling_features(stats_df: pl.DataFrame, window: int = 8) -> pl.Dat
         roll_<volume>        trailing mean of carries / targets
         roll_<rate>          trailing rate as a ratio of rolling sums
         delta_<volume>       trailing DELTA_SHORT-game mean minus DELTA_LONG-game mean
+        std_<rate>           player's season-to-date rate (sum/sum over this
+                             season's prior games; resets each season, null
+                             until the denominator is > 0)
         <rate>               this game's realized rate (the rate models' target;
                              null when the denominator is 0)
 
@@ -68,6 +71,11 @@ def add_stat_rolling_features(stats_df: pl.DataFrame, window: int = 8) -> pl.Dat
         den_sum = trailing(den, window, "sum")
         exprs.append(
             pl.when(den_sum > 0).then(num_sum / den_sum).otherwise(None).alias(f"roll_{rate}")
+        )
+        std_num = pl.col(num).shift(1).cum_sum().over(["gsis_id", "season"])
+        std_den = pl.col(den).shift(1).cum_sum().over(["gsis_id", "season"])
+        exprs.append(
+            pl.when(std_den > 0).then(std_num / std_den).otherwise(None).alias(f"std_{rate}")
         )
         exprs.append(
             pl.when(pl.col(den) > 0).then(pl.col(num) / pl.col(den)).otherwise(None).alias(rate)

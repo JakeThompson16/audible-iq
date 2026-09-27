@@ -95,21 +95,41 @@ Limits: the weight is the average scoring yield per attempt under this league's 
 
 ## RB stat-vector projection (experimental, not in production)
 
-Instead of projecting fantasy points (which ties the model to one league's scoring), predict the raw RB stat line and score it with the unmodified `calculate_points_vectorized`. Volume models (carries, targets) and rate models (ypc, rush TD/carry, catch rate, yards/reception, rec TD/reception) are separate OLS fits on trailing per-stat averages, a recent-usage delta, and `epa_allowed_rush`/`epa_allowed_pass` (opponent EPA/play allowed vs league, shifted and blended like opponent skew). Yards and TDs are derived by multiplication. Run: `python rb_stat_vector_eval.py`.
+Instead of projecting fantasy points (which ties the model to one league's scoring), predict the raw RB stat line and score it with the unmodified `calculate_points_vectorized`.
 
-Held-out RB results (window n=8, same rows for every method, `engine/metrics.py` harness, one Sleeper league's scoring):
+- **Volume models** (carries, targets): OLS on the trailing 8-game average and a recent-usage delta (3-game minus 8-game mean). No matchup term. `epa_allowed` was removed after its coefficient flipped sign between seasons, and removing it didn't change accuracy (LOSO mean MAE 4.671 vs 4.672).
+- **Rate models** (ypc, rush TD/carry, catch rate, yards/reception, rec TD/reception): OLS weighted by attempts (the default), on the trailing rate, the usage delta, and `epa_allowed_rush`/`epa_allowed_pass`. That's opponent EPA/play allowed vs league, shifted and blended like opponent skew.
+- Yards and TDs are derived by multiplication.
 
-| Method | 2024→2025 MAE / R² / Spearman | 2025→2024 MAE / R² / Spearman |
-|---|---|---|
-| Stat vector (OLS rates) | **4.430** / **0.425** / **0.743** | 4.444 / 0.413 / 0.721 |
-| Stat vector (rates weighted by attempts) | 4.487 / 0.427 / 0.742 | 4.499 / 0.421 / 0.722 |
-| Current `rolling_avg_prior + opponent_skew` | 4.513 / 0.407 / 0.732 | 4.396 / 0.434 / 0.727 |
-| `rolling_avg_prior` only | 4.441 / 0.408 / 0.735 | **4.373** / **0.436** / **0.728** |
-| Last week's points | 5.435 / 0.009 / 0.649 | 5.257 / 0.138 / 0.607 |
+Run: `python rb_stat_vector_eval.py`.
 
-It roughly ties the current formula: better in one direction, worse in the other. Almost all the signal is in the volume models (carries R² ≈ 0.57); per-game rate models explain ≤ 1.5% of variance and mostly regress to league average. Unweighted rate fits under-project by 0.2-0.5 points/game; weighting by attempts removes the bias but raises MAE slightly.
+Held-out RB results, leave-one-season-out: each season 2019-2025 is predicted by a model fit on the other six. Same rows for every method in a fold, `engine/metrics.py` harness, one Sleeper league's scoring. Each cell is MAE / R² / Spearman.
 
-Known limitations: 2-pt conversions, first downs, fumbles, and 100/200-yard / 20-carry bonuses are not predicted and contribute 0 (on actual 2024/25 RB stats that omission costs 0.11 points/game on average for the tested league). RB only; QB/WR/TE not built.
+| Test season | Stat vector | Current `rolling_avg_prior + opponent_skew` | `rolling_avg_prior` only |
+|---|---|---|---|
+| 2019 | **4.851** / **0.388** / **0.702** | 4.949 / 0.365 / 0.683 | 4.922 / 0.364 / 0.685 |
+| 2020 | 4.803 / **0.353** / **0.662** | 4.787 / 0.344 / 0.650 | **4.780** / 0.338 / 0.651 |
+| 2021 | 5.100 / **0.307** / 0.619 | 5.062 / 0.299 / **0.621** | **5.032** / 0.299 / 0.620 |
+| 2022 | **4.668** / **0.374** / **0.649** | 4.706 / 0.340 / 0.629 | 4.693 / 0.337 / 0.628 |
+| 2023 | 4.577 / **0.380** / **0.706** | 4.548 / 0.353 / 0.683 | **4.520** / 0.352 / 0.685 |
+| 2024 | 4.526 / 0.422 / 0.720 | 4.400 / 0.434 / 0.727 | **4.373** / **0.436** / **0.728** |
+| 2025 | 4.499 / **0.425** / **0.745** | 4.513 / 0.407 / 0.732 | **4.441** / 0.408 / 0.735 |
+| 2026 wk 1-3 (172 rows) | 4.765 / 0.437 / 0.722 | **4.376** / **0.505** / **0.753** | same as current (no skew rows yet) |
+
+Over the 7 full-season folds, the stat vector:
+- has the highest R² in 6 of 7 folds and the best Spearman (ranking) in 5 of 7, against both benchmarks;
+- has worse MAE than rolling-only in 5 of 7 folds, because its predictions are unbiased on the mean and RB points are right-skewed;
+- loses on every metric in 2024 only. That season was behind the earlier two-season tie.
+
+Replacing the fitted rate models with constants was worse in every fold:
+- league-average rates: MAE +0.032 on average;
+- player season-to-date rates: MAE +0.09, Spearman −0.03.
+
+With six training seasons the matchup terms in the rate models are consistently positive (ypc × `epa_allowed_rush` p < 0.001 in every fold), so the fitted rates carry real, if small, signal.
+
+Known limitations:
+- 2-pt conversions, first downs, fumbles, and 100/200-yard / 20-carry bonuses are not predicted and contribute 0. On actual 2024/25 RB stats that omission costs 0.11 points/game on average for the tested league.
+- RB only; QB/WR/TE not built.
 
 ## Tech
 
