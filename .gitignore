@@ -1,0 +1,5 @@
+# Previous model generation kept locally by pipeline.train (rollback copy)
+artifacts/**/*.json.prev
+# Temp dir used by the safe-overwrite swap
+artifacts/.tmp-*/
+.pytest_cache/

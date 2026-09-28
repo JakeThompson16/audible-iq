@@ -1,0 +1,372 @@
+{
+  "schema_version": 1,
+  "position": "WR",
+  "spec_name": "WR_SPEC",
+  "spec_hash": "85fa283c915e87af81775db492320bd5c9e73f894bd377ff69985d7e5519b274",
+  "spec_config": {
+    "position": "WR",
+    "window": 8,
+    "weight_rates": true,
+    "models": [
+      [
+        "targets",
+        [
+          "roll_targets",
+          "delta_targets"
+        ],
+        null
+      ],
+      [
+        "carries",
+        [
+          "roll_carries",
+          "delta_carries"
+        ],
+        null
+      ],
+      [
+        "catch_rate",
+        [
+          "roll_catch_rate",
+          "delta_targets",
+          "epa_allowed_pass"
+        ],
+        "targets"
+      ],
+      [
+        "ypr",
+        [
+          "roll_ypr",
+          "delta_targets"
+        ],
+        "receptions"
+      ],
+      [
+        "rec_td_rate",
+        [
+          "roll_rec_td_rate",
+          "delta_targets"
+        ],
+        "receptions"
+      ],
+      [
+        "ypc",
+        [
+          "roll_ypc",
+          "delta_carries",
+          "epa_allowed_rush"
+        ],
+        "carries"
+      ],
+      [
+        "rush_td_rate",
+        [
+          "roll_rush_td_rate",
+          "delta_carries",
+          "epa_allowed_rush"
+        ],
+        "carries"
+      ]
+    ],
+    "derivations": [
+      [
+        "rushing_yards",
+        "carries",
+        "*",
+        "ypc"
+      ],
+      [
+        "rushing_tds",
+        "carries",
+        "*",
+        "rush_td_rate"
+      ],
+      [
+        "receptions",
+        "targets",
+        "*",
+        "catch_rate"
+      ],
+      [
+        "wr_receptions",
+        "receptions",
+        "=",
+        null
+      ],
+      [
+        "receiving_yards",
+        "receptions",
+        "*",
+        "ypr"
+      ],
+      [
+        "receiving_tds",
+        "receptions",
+        "*",
+        "rec_td_rate"
+      ]
+    ]
+  },
+  "window": 8,
+  "weight_rates": true,
+  "rate_priors": {
+    "catch_rate": 0.630027485112,
+    "completion_rate": 0.47619047619,
+    "int_rate": 0.111111111111,
+    "pass_td_rate": 0.366666666667,
+    "rec_td_rate": 0.0764896208238,
+    "rush_td_rate": 0.0415335463259,
+    "yards_per_completion": 13.9666666667,
+    "ypc": 5.57933972311,
+    "ypr": 12.6120987385
+  },
+  "sub_models": {
+    "targets": {
+      "kind": "volume",
+      "denominator": null,
+      "weighted": false,
+      "features": [
+        "roll_targets",
+        "delta_targets"
+      ],
+      "intercept": 0.432993195567,
+      "coefficients": [
+        0.877172131877,
+        0.259049776169
+      ],
+      "std_errors": [
+        0.0447800704982,
+        0.0087327669286,
+        0.0213855862855
+      ],
+      "p_values": [
+        5.04071813772e-22,
+        0.0,
+        1.51208789788e-33
+      ],
+      "n": 10380,
+      "r2_in_sample": 0.495753561181
+    },
+    "carries": {
+      "kind": "volume",
+      "denominator": null,
+      "weighted": false,
+      "features": [
+        "roll_carries",
+        "delta_carries"
+      ],
+      "intercept": 0.0499738794559,
+      "coefficients": [
+        0.672823849999,
+        0.159790645785
+      ],
+      "std_errors": [
+        0.00516393321856,
+        0.0119395678835,
+        0.021535568324
+      ],
+      "p_values": [
+        4.65780016083e-22,
+        0.0,
+        1.26436125977e-13
+      ],
+      "n": 10380,
+      "r2_in_sample": 0.234396057078
+    },
+    "catch_rate": {
+      "kind": "rate",
+      "denominator": "targets",
+      "weighted": true,
+      "features": [
+        "roll_catch_rate",
+        "delta_targets",
+        "epa_allowed_pass"
+      ],
+      "intercept": 0.463271440431,
+      "coefficients": [
+        0.260791380556,
+        0.00124614944679,
+        0.266657013942
+      ],
+      "std_errors": [
+        0.0139408936872,
+        0.0216017292243,
+        0.00180397896301,
+        0.0543678102791
+      ],
+      "p_values": [
+        1.84620917982e-228,
+        2.66648590573e-33,
+        0.489722784827,
+        9.52222455447e-07
+      ],
+      "n": 8969,
+      "r2_in_sample": 0.0185854366734
+    },
+    "ypr": {
+      "kind": "rate",
+      "denominator": "receptions",
+      "weighted": true,
+      "features": [
+        "roll_ypr",
+        "delta_targets"
+      ],
+      "intercept": 8.92733177084,
+      "coefficients": [
+        0.292370652676,
+        -0.0167302903999
+      ],
+      "std_errors": [
+        0.266397277081,
+        0.020353709881,
+        0.0505995869057
+      ],
+      "p_values": [
+        1.45201590731e-230,
+        3.22364146749e-46,
+        0.740924415193
+      ],
+      "n": 8031,
+      "r2_in_sample": 0.0250587229167
+    },
+    "rec_td_rate": {
+      "kind": "rate",
+      "denominator": "receptions",
+      "weighted": true,
+      "features": [
+        "roll_rec_td_rate",
+        "delta_targets"
+      ],
+      "intercept": 0.0664447752178,
+      "coefficients": [
+        0.128204822158,
+        0.00118361373181
+      ],
+      "std_errors": [
+        0.0023706273118,
+        0.0222731048841,
+        0.00117991126503
+      ],
+      "p_values": [
+        5.30634352655e-165,
+        8.92790016484e-09,
+        0.31582455537
+      ],
+      "n": 8031,
+      "r2_in_sample": 0.00427852577665
+    },
+    "ypc": {
+      "kind": "rate",
+      "denominator": "carries",
+      "weighted": true,
+      "features": [
+        "roll_ypc",
+        "delta_carries",
+        "epa_allowed_rush"
+      ],
+      "intercept": 5.75884331956,
+      "coefficients": [
+        -0.0279505352097,
+        -0.143836278227,
+        3.27455075602
+      ],
+      "std_errors": [
+        0.32176212303,
+        0.041860659681,
+        0.402753321809,
+        6.1151164209
+      ],
+      "p_values": [
+        1.85385373659e-64,
+        0.504436430803,
+        0.721048391634,
+        0.592402863584
+      ],
+      "n": 1356,
+      "r2_in_sample": 0.000644303644798
+    },
+    "rush_td_rate": {
+      "kind": "rate",
+      "denominator": "carries",
+      "weighted": true,
+      "features": [
+        "roll_rush_td_rate",
+        "delta_carries",
+        "epa_allowed_rush"
+      ],
+      "intercept": 0.0410146917789,
+      "coefficients": [
+        0.0229071286157,
+        -0.0105409809857,
+        0.114297149672
+      ],
+      "std_errors": [
+        0.00521665106725,
+        0.043541791101,
+        0.0099196848095,
+        0.150682791637
+      ],
+      "p_values": [
+        7.65738393087e-15,
+        0.598908326537,
+        0.288138338562,
+        0.44826703227
+      ],
+      "n": 1356,
+      "r2_in_sample": 0.00153208377962
+    }
+  },
+  "trained_on": {
+    "seasons": [
+      2022,
+      2023,
+      2024,
+      2025,
+      2026
+    ],
+    "weeks": {
+      "2022": {
+        "first": 1,
+        "last": 22,
+        "n_weeks": 22
+      },
+      "2023": {
+        "first": 1,
+        "last": 22,
+        "n_weeks": 22
+      },
+      "2024": {
+        "first": 1,
+        "last": 22,
+        "n_weeks": 22
+      },
+      "2025": {
+        "first": 1,
+        "last": 22,
+        "n_weeks": 22
+      },
+      "2026": {
+        "first": 1,
+        "last": 2,
+        "n_weeks": 2
+      }
+    }
+  },
+  "data_through": {
+    "season": 2026,
+    "week": 2
+  },
+  "row_counts": {
+    "player_weeks": 10604,
+    "sub_models": {
+      "targets": 10380,
+      "carries": 10380,
+      "catch_rate": 8969,
+      "ypr": 8031,
+      "rec_td_rate": 8031,
+      "ypc": 1356,
+      "rush_td_rate": 1356
+    }
+  },
+  "fit_timestamp": "2026-09-28T01:43:53+00:00"
+}

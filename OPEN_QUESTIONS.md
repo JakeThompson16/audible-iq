@@ -46,6 +46,9 @@ Numbering is stable; don't renumber._
 ## Found in the 2026-09-24 audit
 
 ### Q-4. Are the README/CLAUDE.md skew conclusions still valid? — PARTIALLY ANSWERED: no; docs rewritten 2026-09-27, k grid still not re-run
+- **Update 2026-09-27 (QB to stat vector):** opponent_skew is now used by NO production position (all four
+  are on the stat vector). It survives only inside the `rolling_plus_skew` alternative implementation
+  and the evaluation baseline; not deleted. Retuning k now only matters if a position is ever moved back.
 - **Update 2026-09-27 (QB/TE pass):** opponent_skew now only affects QB in production (RB/WR/TE are
   on the stat vector). For QB, rolling-alone still edges rolling+skew on MAE (7.869 vs 7.895).
   Remaining question is narrower: keep, retune k, or drop skew for QB.
@@ -74,7 +77,18 @@ Numbering is stable; don't renumber._
   "Grid search finding" paragraph. CLAUDE.md's "don't relitigate" note covers
   design decisions; this is a correctness re-baseline, not relitigating.
 
-### Q-5. Inference-shaped pipeline — OPEN (explicitly NOT addressed by the 2026-09-27 RB merge)
+### Q-5. Inference-shaped pipeline — LARGELY SOLVED 2026-09-27 (see what's still open)
+- **Solved:** `pipeline/predict.py` produces a predicted stat line for a player's next unplayed game
+  (or any past week, as of that week) from production artifacts (`artifacts/stat_vector/<POS>.json`,
+  retrained by `python -m pipeline.train retrain`). Features come from the same `build_features` the
+  backtest uses (placeholder target row + `.shift(1)`), `epa_allowed` has an as-of path for
+  unplayed defense-weeks, and parity with the backtest harness is tested (48 player-weeks, 0 mismatches).
+- **Still open:** (a) projected FANTASY POINTS for an upcoming week through the engine: the engine
+  (`calculate_expected_points`) still needs a stats row per player-week, so points for a future game
+  are `calculate_points_vectorized(predict_...()['stats'], scoring)` today, not an engine call;
+  (b) postseason targets (the schedule includes them, but the models and bye logic were validated on
+  regular + postseason history without a dedicated check); (c) injury/inactive status (a player listed
+  on the roster is projected even if ruled out); (d) scheduling the weekly retrain.
 - **Note 2026-09-27:** the RB stat vector and the position registry are a backtest-validated
   path only. Stat-vector models are fit offline per LOSO fold and passed into the engine;
   there is still no as-of feature builder for an upcoming week and no persisted production
@@ -104,6 +118,9 @@ Numbering is stable; don't renumber._
   `.value` only.
 
 ### Q-7. Tool dispatch / dependency injection — OPEN
+- **Note 2026-09-27:** `pipeline.predict.predict_player_stats` is a natural tool body (takes ids, loads
+  its own cached context and artifacts, returns JSON). It removes the need to pass a precomputed
+  `projections_df`, but it is NOT wired into `tools/` or `TOOL_REGISTRY` yet; that is still Q-6/Q-7 work.
 - **Cause:** `TOOL_REGISTRY["expected_points"]["func"]` takes
   `(args, projections_df)` but the registry entry carries no way to supply
   `projections_df`; a generic agent loop can't call it.
@@ -111,6 +128,13 @@ Numbering is stable; don't renumber._
   startup (ties into Q-2).
 
 ### Q-8. Scope of scoring-settings fidelity — OPEN
+- **Update 2026-09-27 (QB in production):** QB projections do not predict `pass_2pt`, `rush_2pt`,
+  `pass_fd`, `rush_fd`, `pass_sack` (sacks), `fum_lost` (fumbles), or the threshold bonuses
+  `bonus_pass_yd_300/400`, `bonus_pass_cmp_25`, `bonus_rush_yd_100/200`, `bonus_rush_att_20`. They
+  score 0. Leagues affected: any league with a nonzero weight on these, which is nearly every league
+  (standard formats use fum_lost -2 and 2-pt +2; the tested league has pass_2pt 2, fum_lost -2 and costs
+  QBs 0.47 points/game in recomposition); worse in leagues that score first downs, sack penalties or
+  300-yard / 25-completion bonuses. Each prediction lists its gaps in `unpredicted`.
 - **Cause:** any nonzero `ScoringSettings` field not in
   `SCORING_TO_STAT_COLUMN` (e.g. `rec_0_4`..`rec_30_39` bucketed reception
   points, `bonus_rush_rec_yd_100/200`, `bonus_fd_*`, `pass_int_td`, `fum`)
@@ -208,7 +232,13 @@ Numbering is stable; don't renumber._
   move WR/TE to the stat vector (Part 2 of the same instruction starts WR). RB is unaffected
   in production because it no longer uses this formula.
 
-### Q-14. QB stat vector — EVALUATED, NOT SWITCHED (2026-09-27)
+### Q-14. QB stat vector: rush component — NEXT QB PRIORITY (QB switched to stat vector by owner override 2026-09-27)
+- **Status:** QB runs on the stat vector in production by explicit owner override (CLAUDE.md), not because
+  it passed the Spearman-first bar. The measured gaps to close, both from the rushing-volume segmentation:
+  (1) high-rushing QBs are under-projected by 1.60 pts/game (rolling+skew: 0.68), worse in 7/7 folds;
+  (2) they rank worse among themselves (Spearman 0.312 vs 0.363; rolling+skew better in 6 of 7 folds).
+  Next step: scramble vs designed-run split / better rushing rates.
+- History (evaluation before the switch):
 - **Result (LOSO 2019-2025, window 12):** MAE 7.911 / R² 0.238 / Spearman 0.483, bias -0.10, vs tuned
   rolling+skew 7.895 / 0.220 / 0.487 at rolling window 12 (7.915 / 0.217 / 0.492 at the reselected
   window 14, which widens the Spearman gap) (bias -0.31) and rolling alone 7.869 / 0.221 / 0.480. Fold

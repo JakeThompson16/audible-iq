@@ -35,6 +35,27 @@ def _de_pivot_df(schedule: pl.DataFrame) -> pl.DataFrame:
     return df.select(GAMES_COLS)
 
 
+def load_team_schedule(seasons: int | list[int]) -> pl.DataFrame:
+    """
+    :return: one row per (team, season, week) game, all game types:
+        team, opponent, season, week, game_type, game_id, completed
+        (completed = the game has a final score).
+    """
+    if isinstance(seasons, int):
+        seasons = [seasons]
+
+    schedule = nfl.load_schedules(seasons).select([
+        'game_id', 'home_team', 'away_team', 'season', 'week', 'game_type', 'home_score'
+    ]).with_columns(pl.col('home_score').is_not_null().alias('completed'))
+
+    home = schedule.with_columns(pl.col('home_team').alias('team'), pl.col('away_team').alias('opponent'))
+    away = schedule.with_columns(pl.col('away_team').alias('team'), pl.col('home_team').alias('opponent'))
+
+    return pl.concat([home, away]).select(
+        ['team', 'opponent', 'season', 'week', 'game_type', 'game_id', 'completed']
+    ).sort(['season', 'week', 'team'])
+
+
 def pull_team_games(seasons: int | list[int]) -> pl.DataFrame:
     """
     :param seasons: Seasons to pull games from

@@ -20,6 +20,20 @@ CONFIDENCE_TIER_THRESHOLDS = {
 KEY = ["gsis_id", "season", "week"]
 
 
+def confidence_tier(games_col: str) -> pl.Expr:
+    """
+    The one confidence rule (games played this season before the game),
+    shared by the engine and the prediction pipeline.
+    """
+    games = pl.col(games_col)
+    return (
+        pl.when(games == 0).then(pl.lit("insufficient_data"))
+        .when(games < CONFIDENCE_TIER_THRESHOLDS["low"]).then(pl.lit("low"))
+        .when(games < CONFIDENCE_TIER_THRESHOLDS["medium"]).then(pl.lit("medium"))
+        .otherwise(pl.lit("high"))
+    )
+
+
 @dataclass
 class ExpectedPointsContext:
     """
@@ -72,7 +86,10 @@ IMPLEMENTATIONS: dict[str, Implementation] = {
 }
 
 POSITION_IMPLEMENTATIONS: dict[str, str] = {
-    "QB": "rolling_plus_skew",
+    # QB: owner override 2026-09-27 (CLAUDE.md "Projection formula"): the QB
+    # stat vector missed the Spearman-first bar (0.483 vs 0.492 mean) but one
+    # architecture / one stat-line output for all positions was chosen.
+    "QB": "stat_vector",
     "RB": "stat_vector",
     "WR": "stat_vector",
     "TE": "stat_vector",
@@ -175,15 +192,6 @@ def calculate_expected_points(
 
     df = assert_no_fanout(df, df.join(projections, on=KEY, how="left"), "stats x projections")
 
-    df = df.with_columns(
-        pl.when(pl.col("games_this_season") == 0)
-        .then(pl.lit("insufficient_data"))
-        .when(pl.col("games_this_season") < CONFIDENCE_TIER_THRESHOLDS["low"])
-        .then(pl.lit("low"))
-        .when(pl.col("games_this_season") < CONFIDENCE_TIER_THRESHOLDS["medium"])
-        .then(pl.lit("medium"))
-        .otherwise(pl.lit("high"))
-        .alias("confidence")
-    )
+    df = df.with_columns(confidence_tier("games_this_season").alias("confidence"))
 
     return df

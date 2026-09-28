@@ -24,6 +24,15 @@ a raw Sleeper call.
 - Schedule -> per-team opponent table — `clients/nflreadpy/team_data.py`
 - Evaluation harness — `engine/metrics.py` (logic sound; inputs are suspect, B-1)
 
+## Update 2026-09-27 (later): all four positions on the stat vector; production pipeline
+- QB moved to `stat_vector` by owner override (see CLAUDE.md); `rolling_plus_skew` kept as the
+  alternative implementation and baseline. test.py reproduces QB 7.911 / 0.238 / 0.483 exactly.
+- `pipeline/`: `python -m pipeline.train retrain` (JSON artifacts in `artifacts/stat_vector/`,
+  `artifacts/MODEL_METRICS.md`), `predict_player_stats()` / `predict_many()` for upcoming or past
+  games. Trained through 2026 week 2 on 2022+. pytest suite in `tests/` (parity with the backtest,
+  round-trip scoring, IDs, statuses, artifact safety, determinism).
+- Still open: Q-5 remainder (engine points for future games, injuries), Q-6/Q-7 (tool wiring), Q-14.
+
 ## Update 2026-09-27: RB stat vector merged into the engine
 - Expected points — `engine/expected_points.py`: position -> implementation registry.
   RB = stat vector (`projections/expected_points/stat_vector/`), QB/WR/TE =

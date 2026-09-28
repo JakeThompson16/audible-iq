@@ -228,6 +228,29 @@ def load_player_stats(seasons: int | list[int]) -> pl.DataFrame:
     )
 
 
+def load_weekly_rosters(seasons: int | list[int]) -> pl.DataFrame:
+    """
+    :return: nflverse weekly rosters, one row per (gsis_id, season, week):
+        gsis_id, season, week, team, position. Team abbreviations match the
+        schedule and the stats' opponent_team (unlike the ff_playerids
+        crosswalk's team field, which uses e.g. KCC / LAR / JAC).
+    """
+    if isinstance(seasons, int):
+        seasons = [seasons]
+
+    df = nfl.load_rosters_weekly(seasons).filter(pl.col('gsis_id').is_not_null())
+    return (
+        df.select(['gsis_id', 'season', 'week', 'team', 'position'])
+        .unique(subset=['gsis_id', 'season', 'week'], keep='last', maintain_order=True)
+        .sort(['gsis_id', 'season', 'week'])
+    )
+
+
+def load_latest_teams() -> pl.DataFrame:
+    """:return: gsis_id, latest_team from nflverse players (same abbreviations as the schedule)."""
+    return nfl.load_players().select(['gsis_id', 'latest_team']).filter(pl.col('gsis_id').is_not_null())
+
+
 def get_snap_counts(seasons: int | list[int]) -> pl.DataFrame:
     """
     :param seasons: Seasons to get snap counts from

@@ -61,8 +61,9 @@ Layered to isolate external API/data-source dependencies from core logic:
   - `core.py` — shared machinery: `StatVectorSpec` (per-position model
     spec), OLS/WLS fitting, `fit_stat_vector()` (offline fit ->
     `StatVectorModel`), `StatVectorModel.predict_points()`.
-  - `rb.py`, `wr.py`, `te.py` — validated specs, in production. `qb.py` —
-    evaluated, NOT switched on (Q-14). `specs.py` — `STAT_VECTOR_SPECS`.
+  - `rb.py`, `wr.py`, `te.py`, `qb.py` — the four specs, all in production
+    (QB by owner override, see "Projection formula"). `specs.py` —
+    `STAT_VECTOR_SPECS`.
     Each spec carries its own feature `window` and a `derivations` chain
     (`rush_receive_derivations(...)` for RB/WR/TE, `PASS_RUSH_DERIVATIONS`
     for QB) that turns predicted volumes x rates into the stat line. A spec's
@@ -72,8 +73,9 @@ Layered to isolate external API/data-source dependencies from core logic:
   context, position_implementations=None)`. Joins opponent skew for every
   row (week/season/opponent_team/position), then dispatches each position to
   an implementation via `POSITION_IMPLEMENTATIONS` (see "Swappable
-  implementations" below): RB/WR/TE -> `stat_vector`, QB ->
-  `rolling_plus_skew`. Adds `projection`, `projection_method`, and a
+  implementations" below): all four positions -> `stat_vector`.
+  `rolling_plus_skew` stays registered as the alternative implementation and
+  evaluation baseline. Adds `projection`, `projection_method`, and a
   `confidence` tier per row. `ExpectedPointsContext` carries skew_df,
   epa_df, scoring, fitted stat-vector models (fitting happens offline), and
   `rolling_windows` (position -> window, default `POSITION_ROLLING_WINDOWS`);
@@ -108,15 +110,42 @@ Layered to isolate external API/data-source dependencies from core logic:
     entry when adding an implementation.
   - `tools/registry.py` — `TOOL_REGISTRY` dict, tool name -> {args_model,
     func, description}.
+- `pipeline/` — production packaging (see "Production pipeline" below).
+  - `context.py` — `FeatureContext`, loaded once per process (`get_context()`,
+    `refresh_context()`): stats, weekly EPA residuals, team schedule with
+    completion flags, weekly rosters, latest teams, `data_through`.
+  - `train.py` — `train_all()` + `python -m pipeline.train retrain`.
+  - `artifacts.py` — JSON artifact format, spec-compatibility check,
+    validation, safe overwrite.
+  - `predict.py` — `predict_player_stats()` / `predict_many()`.
+  - `reference_ranges.py` / `reference_ranges.json` — 2019-2025 LOSO
+    coefficient ranges used by retrain validation.
+- `artifacts/` — `stat_vector/<POS>.json` production models (committed),
+  `MODEL_METRICS.md` (regenerated on every retrain). `*.json.prev` is the
+  local previous generation (git-ignored).
+- `tests/` — pytest (`python -m pytest`): parity with the backtest harness,
+  round-trip scoring, ID resolution, status paths, artifact safety,
+  determinism. Downloads real data; takes several minutes.
 - `config.py` — `PLAYER_METADATA` is the single canonical list of player
   identity/metadata fields; all player construction depends on it.
 
 ## Key design decisions (with rationale — don't relitigate without reason)
 
-**Projection formula (per position)**: QB uses
-`projection = rolling_avg_prior + opponent_skew`, deliberately simple and
-unfitted. RB, WR and TE use the stat vector (fitted OLS volume + attempt-weighted rate
-models, recomposed through league scoring). Adopting fitted coefficients for
+**Projection formula (per position)**: all four positions use the stat vector
+(fitted OLS volume + attempt-weighted rate models, recomposed through league
+scoring). `rolling_avg_prior + opponent_skew` (simple, unfitted) remains
+registered as the alternative implementation and the evaluation baseline.
+
+**QB is on the stat vector by explicit OWNER OVERRIDE (2026-09-27), not
+because it passed the selection policy.** The QB stat vector missed the
+Spearman-first bar: LOSO 2019-2025 mean Spearman 0.483 vs 0.492 for
+rolling+skew at window 14 (MAE 7.911 vs 7.915, R² 0.238 vs 0.217; partial 2026
+weeks 1-3 worse: 8.559 / 0.154 / 0.323 vs 8.406 / 0.160 / 0.364). Reasons for the
+override: one architecture and one output (a predicted stat line) for all
+four positions, portability across scoring settings, and the stat-prediction
+pipeline needs it. Q-14 (the QB rush component) is the next QB priority.
+
+Adopting fitted coefficients for
 RB was an explicit decision on 2026-09-27 (Q-11b), made because the stat vector
 beat the incumbent on held-out seasons AND is league-portable. The original
 reason for staying unfitted still applies: the projection is boom/bust's
@@ -220,7 +249,7 @@ positive and significant in 7/7 folds, which is unlike WR, where neither
 cleared. On catch_rate it's positive 7/7 and significant 5/7. Off (candidate):
 targets volume EPA, positive 7/7 but significant only 3/7.
 
-**QB stat vector** (`stat_vector/qb.py`, evaluated, NOT switched on): volume
+**QB stat vector** (`stat_vector/qb.py`, in production by owner override): volume
 = pass attempts + rush attempts (scrambles included via play_type == 'run');
 rates completion_rate / int_rate per attempt, yards_per_completion /
 pass_td_rate per completion, ypc / rush_td_rate per rush attempt; completions,
@@ -347,6 +376,81 @@ touching the rest of the app.
 **Scoring validated**: `calculate_points_vectorized()` cross-checked against
 real Sleeper league data (Trey McBride, full season, two different league
 scoring configs including a TE-premium league) — exact matches.
+
+## Production pipeline (training, artifacts, prediction)
+
+**Retraining**: `python -m pipeline.train retrain [--start 2022] [--end YYYY]
+[--dry-run]` or `train_all(start_season=2022, end_season=None, save=True)`.
+Fits every spec in `STAT_VECTOR_SPECS` with `fit_stat_vector` unchanged, on
+target rows from `start_season` through `data_through` = the last week whose
+scheduled games are ALL final (an in-progress week is excluded). Two seasons
+before `start_season` are loaded as history only (trailing windows, epa).
+Idempotent: same data -> same artifacts except `fit_timestamp`. Safe to run
+weekly; schedule it Tuesday morning (after Monday Night Football is final),
+e.g. Windows Task Scheduler / cron running the CLI from the repo root. It
+exits non-zero on a validation error and leaves the old artifacts in place.
+Scheduling itself is not set up.
+
+**Artifact format** (`artifacts/stat_vector/<POS>.json`, JSON, never pickle):
+`schema_version`, `position`, `spec_name`, `spec_hash` (sha256 of the spec
+config: sub-models with ordered features and denominators, derivations,
+window, weighting), `spec_config`, `window`, `weight_rates`, `rate_priors`,
+`sub_models` (per target: kind, denominator, weighted, ordered `features`,
+`intercept`, `coefficients`, `std_errors`, `p_values`, `n`, `r2_in_sample`),
+`trained_on` (seasons, weeks), `data_through`, `row_counts`, `fit_timestamp`.
+Floats are rounded to 12 significant digits so retrains are byte-identical
+(multi-threaded aggregation can flip the last bit). The loader
+(`artifacts.check_compatible`) compares the artifact to the in-code spec and
+raises `ArtifactSpecMismatch` on any difference: never apply mismatched
+coefficients; retrain instead.
+
+**Safe overwrite**: artifacts and `MODEL_METRICS.md` are written to a temp
+dir, validated, then swapped in, keeping `<POS>.json.prev`. Validation
+errors (nothing written): NaN/inf, a sub-model below its row floor (volume
+1000, rate 50), a coefficient GROSSLY outside its 2019-2025 LOSO range
+(beyond it by more than the range's width), or a coefficient that was
+p < 0.01 last time moving > 5 SE and > 50%. Warnings only: outside the LOSO
+range but not gross (common: those fold ranges are narrow because folds share
+5/6 of their data, and production trains on a different window), > 25% move
+vs the previous artifact.
+
+**Prediction API** (`pipeline/predict.py`):
+`predict_player_stats(player_id, gsis_id=False, season=None, week=None)` and
+`predict_many(ids, ...)` (the single call is a thin wrapper). Returns a
+JSON-serializable dict: `player` {gsis_id, sleeper_id, name, position, team,
+team_source}, `target` {season, week, opponent}, `status`, `reason`, `stats`
+(exact `calculate_points_vectorized` column names, only predicted categories),
+`volume_rate_detail`, `games_this_season`, `confidence` (engine
+`confidence_tier`, unchanged), `projection_method`, `model_version`
+{fit_timestamp, data_through}, `unpredicted`. Status: ok | bye |
+no_game_scheduled | no_history | unknown_player | unsupported_position; never
+zeros for missing data. Pass `models=` to use in-memory models instead of the
+production artifacts (the parity tests do this).
+
+**ID conventions**: all ids are compared as `str`; `predict.normalize_id`
+turns 4984 / 4984.0 / "4984.0" into "4984" at the boundary. Sleeper -> GSIS
+and GSIS -> info maps come from `load_player_metadata` (its dedupe +
+`assert_unique_key`), cached with `lru_cache`; `refresh_player_maps()` clears
+them. Position comes from the player's stats rows (what the backtest uses),
+falling back to the crosswalk. QB/RB/WR/TE only.
+
+**Current team**: nflverse weekly rosters at the latest week <= the target
+(pre-game information), else nflverse `latest_team` (current season), else
+the player's last stats row. Checked 2020-2026: roster team equals the
+stats-row team in every played QB/RB/WR/TE week (0 mismatches). For players
+who haven't played yet this season, the last stats row is often stale
+(85 of 174 in 2026 were on a new roster team). Never use the ff_playerids
+`team` field: different abbreviations (KCC, LAR, JAC) and stale.
+
+**As-of semantics**: only data strictly before the target game. The target
+defaults to the team's next unplayed game (schedule `completed` flag); an
+explicit (season, week) works for past weeks too. A placeholder row for the
+target game is appended to the player's history and run through the SAME
+`build_features` the backtest uses (`.shift(1)` ignores the placeholder's own
+stats). `epa_allowed` for a defense-week not yet played is the defense's value
+after its last game (`epa_allowed_from_weekly(..., as_of_keys=...)`, identical
+to what a played week gets). The context is loaded once per process;
+per-player calls don't touch nflreadpy (`refresh_context()` after new data).
 
 ## Known bugs already hit once — don't reintroduce
 

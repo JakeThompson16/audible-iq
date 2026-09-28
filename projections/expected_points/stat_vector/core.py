@@ -6,7 +6,7 @@ import polars as pl
 from scipy import stats as sp_stats
 
 from domain.scoring import ScoringSettings
-from engine.scoring import calculate_points_vectorized
+from engine.scoring import SCORING_TO_STAT_COLUMN, calculate_points_vectorized
 from projections.expected_points.features.epa_allowed import join_epa_allowed
 from projections.expected_points.features.stat_rolling import RATE_STATS, add_stat_rolling_features
 
@@ -94,6 +94,18 @@ class StatVectorSpec:
         # completion threshold bonuses) is absent from the scored frame and
         # contributes 0 — see OPEN_QUESTIONS.md Q-8.
         return self.volume_targets + [out for out, *_ in self.derivations]
+
+
+_RECEPTION_BONUS_POSITION = {"bonus_rec_rb": "RB", "bonus_rec_wr": "WR", "bonus_rec_te": "TE"}
+
+
+def unpredicted_categories(spec: "StatVectorSpec") -> list[str]:
+    """ScoringSettings fields the spec never produces for its position (they score 0)."""
+    produced = set(spec.recomposed_columns)
+    return [
+        f for f, col in SCORING_TO_STAT_COLUMN.items()
+        if col not in produced and _RECEPTION_BONUS_POSITION.get(f, spec.position) == spec.position
+    ]
 
 
 @dataclass

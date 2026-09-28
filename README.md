@@ -10,8 +10,12 @@ Currently implemented:
 - **League-accurate scoring engine**: computes fantasy points via a vectorized dot product of each league's actual scoring settings against raw stat lines (supports PPR variants, TE premium, yardage/completion bonus thresholds, etc.)
 - **Validated**: scoring output cross-checked against real Sleeper league data (Trey McBride, full season) with exact matches
 - **Weekly point projection engine** with a per-position implementation registry:
-  - **RB, WR and TE**: a league-portable *stat vector* (predicted carries/targets and per-attempt rates, scored through the league's own settings).
-  - **QB**: a trailing 12-game average plus an opponent-adjusted matchup skew. A QB stat vector was evaluated and narrowly didn't clear the bar.
+  - **All four positions (QB/RB/WR/TE)**: a league-portable *stat vector* (predicted volume and per-attempt rates, scored through the league's own settings). QB is on it by an explicit owner decision; it narrowly missed the selection bar (see below).
+  - The earlier trailing average + opponent skew formula remains as an alternative implementation and the evaluation baseline.
+- **Production pipeline**:
+  - `python -m pipeline.train retrain` refits all positions on 2022 through the last completed week. It writes JSON model artifacts to `artifacts/stat_vector/` and a regenerated `artifacts/MODEL_METRICS.md`.
+  - `pipeline.predict.predict_player_stats(sleeper_or_gsis_id)` returns a predicted stat line for the player's next game, or for any past week, as of that week.
+  - Tests: `python -m pytest`.
   - Every projection gets a confidence tier.
   - See [Model Evaluation](#model-evaluation).
 
@@ -51,12 +55,12 @@ Selection policy: start/sit is a ranking decision, so choices prioritize mean Sp
 
 | Pos | Implementation | Window | MAE | R² | Spearman | Rolling-avg-alone MAE / R² |
 |---|---|---:|---:|---:|---:|---|
-| QB | rolling_avg_prior + opponent_skew | 14 | 7.915 | 0.217 | 0.492 | 7.897 / 0.218 |
+| QB | **stat vector** (owner override) | 12 (stat-vector) | 7.911 | **0.238** | 0.483 | 7.897 / 0.218 |
 | RB | **stat vector** | 8 | **4.717** | **0.378** | **0.686** | 4.733 / 0.349 |
 | WR | **stat vector** | 10 | **4.690** | **0.344** | **0.651** | 4.692 / 0.326 |
 | TE | **stat vector** | 10 (stat-vector) | **4.233** | **0.326** | **0.590** | 4.286 / 0.301 |
 
-The Window column is the rolling-average window, except for TE, where it's the stat vector's own feature window. RB and WR stat vectors use 8.
+The Window column is the stat vector's feature window where marked (RB and WR use 8); otherwise it's the rolling-average window. The previous QB formula (rolling + skew, window 14) scored 7.915 / 0.217 / 0.492: better Spearman, which is why QB's switch is an owner decision rather than a policy pass.
 
 On corrected data, opponent_skew doesn't beat rolling-average-alone at any position; it now only feeds QB (OPEN_QUESTIONS Q-4).
 

@@ -57,9 +57,76 @@ def _trailing_shrunk(weekly: pl.DataFrame, k: float) -> pl.DataFrame:
     ).select(KEY + ["epa_allowed", "n_games", "n_plays"])
 
 
+def weekly_epa_residuals(pbp_df: pl.DataFrame) -> tuple[pl.DataFrame, pl.DataFrame]:
+    """(pass, rush) weekly residual tables, the input to epa_allowed_from_weekly."""
+    return (
+        _weekly_residuals(_construct_passing_columns(pbp_df)),
+        _weekly_residuals(_construct_rushing_columns(pbp_df)),
+    )
+
+
 def calculate_epa_allowed(pbp_df: pl.DataFrame, k: float = 16.0) -> pl.DataFrame:
+    return epa_allowed_from_weekly(*weekly_epa_residuals(pbp_df), k=k)
+
+
+def _value_after_each_game(weekly: pl.DataFrame, k: float) -> pl.DataFrame:
     """
-    :param pbp_df: raw play-by-play (nflreadpy load_pbp), all loaded seasons
+    Per real defense-week: the shrunk trailing value INCLUDING that week, i.e.
+    what the feature would be for the defense's next game. Same window,
+    count and shrinkage as _trailing_shrunk, just without the shift.
+    """
+    weekly = weekly.sort(KEY).with_columns(
+        pl.col("residual").rolling_mean(window_size=SKEW_WINDOW, min_samples=1).over("defteam").alias("_m"),
+        pl.col("residual").is_not_null().cast(pl.Int32)
+        .rolling_sum(window_size=SKEW_WINDOW, min_samples=1).over("defteam").alias("_n"),
+    )
+    return weekly.with_columns(
+        (pl.col("_m") * pl.col("_n") / (pl.col("_n") + k)).fill_null(0.0).alias("epa_allowed"),
+        (pl.col("season") * 100 + pl.col("week")).alias("_t"),
+    ).select(["defteam", "_t", "epa_allowed", "_n"])
+
+
+def _as_of(weekly: pl.DataFrame, keys: pl.DataFrame, k: float) -> pl.DataFrame:
+    """
+    epa_allowed for (defteam, season, week) keys that have no row of their own
+    (games not played yet): the value after the defense's last game strictly
+    before the key. Identical to what _trailing_shrunk gives a real row, since
+    that value is also built from strictly-earlier games only.
+    """
+    after = _value_after_each_game(weekly, k).sort(["defteam", "_t"])
+    left = keys.with_columns((pl.col("season") * 100 + pl.col("week")).alias("_t")).sort(["defteam", "_t"])
+    joined = left.join_asof(after, on="_t", by="defteam", strategy="backward", allow_exact_matches=False)
+    return joined.with_columns(
+        pl.col("epa_allowed").fill_null(0.0),
+        pl.col("_n").fill_null(0).alias("n_games"),
+    ).select(KEY + ["epa_allowed", "n_games"])
+
+
+def epa_allowed_from_weekly(
+        pass_weekly: pl.DataFrame,
+        rush_weekly: pl.DataFrame,
+        k: float = 16.0,
+        as_of_keys: pl.DataFrame | None = None) -> pl.DataFrame:
+    """
+    calculate_epa_allowed from precomputed weekly residual tables.
+    as_of_keys: optional (defteam, season, week) rows to add for defense-weeks
+    that haven't been played (future targets); existing keys are unchanged.
+    """
+    df = _epa_table(pass_weekly, rush_weekly, k)
+    if as_of_keys is None:
+        return df
+
+    missing = as_of_keys.select(KEY).unique().join(df.select(KEY), on=KEY, how="anti")
+    if missing.height == 0:
+        return df
+    p = _as_of(pass_weekly, missing, k).rename({"epa_allowed": "epa_allowed_pass"})
+    r = _as_of(rush_weekly, missing, k).rename({"epa_allowed": "epa_allowed_rush"}).drop("n_games")
+    extra = p.join(r, on=KEY, how="left")
+    return assert_unique_key(pl.concat([df, extra], how="diagonal_relaxed").sort(KEY), KEY, "epa_allowed")
+
+
+def _epa_table(pass_weekly: pl.DataFrame, rush_weekly: pl.DataFrame, k: float) -> pl.DataFrame:
+    """
     :param k: shrinkage constant, same default as opponent skew. Not tuned for
         EPA; downstream OLS coefficients absorb overall scale.
     :return: one row per (defteam, season, week) the defense played:
@@ -70,8 +137,8 @@ def calculate_epa_allowed(pbp_df: pl.DataFrame, k: float = 16.0) -> pl.DataFrame
     Pass plays use the corrected (sack-excluded) filter and run plays use
     play_type == 'run', both shared with aggregate_pbp.py.
     """
-    pass_df = _trailing_shrunk(_weekly_residuals(_construct_passing_columns(pbp_df)), k)
-    rush_df = _trailing_shrunk(_weekly_residuals(_construct_rushing_columns(pbp_df)), k)
+    pass_df = _trailing_shrunk(pass_weekly, k)
+    rush_df = _trailing_shrunk(rush_weekly, k)
 
     df = pass_df.rename({
         "epa_allowed": "epa_allowed_pass", "n_plays": "n_plays_pass",
