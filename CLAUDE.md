@@ -125,7 +125,10 @@ Layered to isolate external API/data-source dependencies from core logic:
     `PlayerIndex.suggest(query, size=8)` / `.get(gsis_id)`. fast-autocomplete
     over current-season rostered QB/RB/WR/TE, keyed by gsis_id.
   - `projection_service.py` — `project_player(gsis_id, season=None, week=None)`:
-    thin layer over `predict_player_stats` adding home/away and game date.
+    everything a projection card needs, as a thin layer over
+    `predict_player_stats` (see "Projection service" below).
+- `webapp/main.py` — NiceGUI page (presentation only): `python webapp/main.py`
+  -> http://localhost:8090 (`--port N` to change; 8080 is often taken).
 - `requirements.txt` — pinned dependencies.
 - `artifacts/` — `stat_vector/<POS>.json` production models (committed),
   `MODEL_METRICS.md` (regenerated on every retrain). `*.json.prev` is the
@@ -485,6 +488,38 @@ seasons) and typo matches (edit distance < 3 once 3+ characters are
 unmatched); a fallback handles "first-prefix last-prefix" ("pat mah"). Names
 collide, so keys map to sets of gsis_ids and a selection is always the
 gsis_id, never re-resolved from the display string ("Name · POS · TEAM").
+
+**Search API (gsis-keyed)**: `build_player_index(season=None)` -> cached
+`PlayerIndex`; `refresh_player_index(reload_data=True)` rebuilds (and reloads
+rosters + id maps). `PlayerIndex.suggest(query, size=8)` -> list of
+`{gsis_id, sleeper_id, name, display, position, team}`; `.get(gsis_id)` -> that
+dict or None. Everything downstream (UI selection, agent, Sleeper roster flow)
+passes the gsis_id; never look a player up again by display string or name.
+
+**Projection service** (`search/projection_service.py`): `project_player` returns
+`predict_player_stats`' dict (player, target, status, reason, stats,
+volume_rate_detail, bounds_applied, games_this_season, confidence,
+projection_method, model_version, unpredicted, in_training_window) plus
+`target.home_away` / `gameday` / `game_final` and, for a final game,
+`actual` (the player's real stats, same keys as `stats`; None with
+`actual_note` if he has no stats row). Default target = the team's next
+unplayed game; a bye week has no schedule row, so the following week is
+returned, always with its week number. `in_training_window` (added to the
+prediction output) is True when the target season is a trained season and the
+week is <= the artifact's data_through: a comparison with actuals there is
+in-sample. No per-call nflreadpy loads (process-wide caches).
+
+**Web UI** (`webapp/main.py`, NiceGUI 3.17): no business logic. Startup loads
+the context + index in a worker thread (`run.io_bound`) behind a loading
+state; the search box calls `PlayerIndex.suggest` (debounced 0.2 s) and a
+selection calls `project_player` with the gsis_id. Non-ok statuses render as
+labeled messages; a static note says injuries/inactives aren't modeled. Dev
+mode (off by default) shows confidence, projection_method,
+in_training_window, model version, volume/rate detail, a week override, and
+for a final game the actuals next to the projection with an "in-sample"
+badge when in_training_window. The footer shows data_through and fit time.
+Tested with NiceGUI's `User` fixture (`tests/test_app.py`, plugin enabled in
+pytest.ini).
 
 ## Known bugs already hit once — don't reintroduce
 

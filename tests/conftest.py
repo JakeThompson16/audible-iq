@@ -27,6 +27,13 @@ def ctx():
 
 
 @pytest.fixture(scope="session")
+def index(ctx):
+    """The player search index (also warms the cache the app's startup load uses)."""
+    from search.player_search import build_player_index
+    return build_player_index(context=ctx)
+
+
+@pytest.fixture(scope="session")
 def harness(scoring):
     """The backtest harness inputs (2018 onward), exactly as test.py builds them."""
     return load_inputs(scoring)

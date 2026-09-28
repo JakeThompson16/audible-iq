@@ -89,7 +89,23 @@ def _production_model(position: str, directory) -> tuple[StatVectorModel, dict]:
     if key not in _MODELS:
         _MODELS[key] = load_model(position, directory)
     art = read_artifact(position, directory)
-    return _MODELS[key], {"fit_timestamp": art.get("fit_timestamp"), "data_through": art.get("data_through")}
+    return _MODELS[key], {"fit_timestamp": art.get("fit_timestamp"), "data_through": art.get("data_through"),
+                          "trained_seasons": art.get("trained_on", {}).get("seasons", [])}
+
+
+def _in_training_window(target: dict, version: dict) -> bool:
+    """
+    True if the target week is part of the model's training data (so a
+    comparison with actuals is in-sample): its season was trained on and the
+    week is at or before data_through. In-memory models without a
+    data_through use their training seasons alone.
+    """
+    if target["season"] not in (version.get("trained_seasons") or []):
+        return False
+    through = version.get("data_through")
+    if not through:
+        return True
+    return (target["season"], target["week"]) <= (through["season"], through["week"])
 
 
 def refresh_models() -> None:
@@ -164,6 +180,7 @@ def _result(player, target, status, reason, **extra) -> dict:
         "projection_method": "stat_vector",
         "model_version": None,
         "unpredicted": None,
+        "in_training_window": None,  # target week inside the model's training data (in-sample)
     }
     out.update(extra)
     return out
@@ -242,8 +259,9 @@ def predict_many(ids, gsis_id: bool = False, season: int | None = None, week: in
         if not batch:
             continue
         if models is not None:
-            model, version = models[position], {"fit_timestamp": None, "data_through": None,
-                                                 "source": "in-memory model (not a production artifact)"}
+            model = models[position]
+            version = {"fit_timestamp": None, "data_through": None, "trained_seasons": list(model.train_seasons),
+                       "source": "in-memory model (not a production artifact)"}
         else:
             model, version = _production_model(position, artifacts_dir)
 
@@ -270,7 +288,8 @@ def predict_many(ids, gsis_id: bool = False, season: int | None = None, week: in
             row = vec.filter(pl.col("gsis_id") == gsis).row(0, named=True)
             games = history.filter(pl.col("season") == target["season"]).height
             common = dict(games_this_season=games, confidence=_confidence(games), model_version=version,
-                          unpredicted=unpredicted_categories(spec))
+                          unpredicted=unpredicted_categories(spec),
+                          in_training_window=_in_training_window(target, version))
             stats = {c: row[c] for c in spec.recomposed_columns}
             if any(v is None for v in stats.values()):
                 results[i] = _result(player, target, "no_history",

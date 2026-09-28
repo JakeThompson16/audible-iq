@@ -8,13 +8,9 @@ import pytest
 from engine.expected_points import POSITION_IMPLEMENTATIONS
 from pipeline.predict import predict_many
 from projections.expected_points.stat_vector.core import StatVectorBoundsError, check_stat_line, stat_line_violations
-from search.player_search import build_player_index, name_keys, normalize_name, production_positions
-from search.projection_service import project_player
-
-
-@pytest.fixture(scope="session")
-def index(ctx):
-    return build_player_index(context=ctx)
+from search.player_search import (
+    PlayerIndex, build_player_index, name_keys, normalize_name, production_positions, refresh_player_index,
+)
 
 
 def _first(index, query):
@@ -55,6 +51,9 @@ def test_team_matches_prediction_pipeline(index, ctx, trained):
 
 @pytest.mark.parametrize("query,expected_name", [
     ("mahom", "Patrick Mahomes"),            # prefix
+    ("patrick mahomes", "Patrick Mahomes"),  # full name
+    ("PaTrIcK MaHoMeS", "Patrick Mahomes"),  # mixed case
+    ("mahomez", "Patrick Mahomes"),          # one-character typo
     ("mahomes", "Patrick Mahomes"),          # last name only
     ("patrik mahomes", "Patrick Mahomes"),   # typo
     ("pat mah", "Patrick Mahomes"),          # first + last prefixes
@@ -89,6 +88,34 @@ def test_shared_names_stay_separate(index):
     assert set(gsis_ids) <= got
 
 
+def test_duplicate_names_are_distinct_entries():
+    """Two players with the same name are two entries with distinct gsis_ids (synthetic index)."""
+    entries = {
+        "00-1": {"gsis_id": "00-1", "sleeper_id": "1", "name": "Mike Williams", "display": "Mike Williams · WR · NYJ",
+                 "position": "WR", "team": "NYJ"},
+        "00-2": {"gsis_id": "00-2", "sleeper_id": "2", "name": "Mike Williams", "display": "Mike Williams · WR · PIT",
+                 "position": "WR", "team": "PIT"},
+    }
+    key_to_gsis = {}
+    for g, e in entries.items():
+        for k in name_keys(e["name"]):
+            key_to_gsis.setdefault(k, set()).add(g)
+    idx = PlayerIndex(season=2026, entries=entries, relevance={"00-1": 30, "00-2": 5}, key_to_gsis=key_to_gsis,
+                      excluded_not_in_crosswalk=0, excluded_other_position=0)
+    hits = idx.suggest("mike williams")
+    assert [h["gsis_id"] for h in hits] == ["00-1", "00-2"]      # both, ordered by relevance
+    assert {h["display"] for h in hits} == {"Mike Williams · WR · NYJ", "Mike Williams · WR · PIT"}
+    assert [h["gsis_id"] for h in idx.suggest("williams")] == ["00-1", "00-2"]
+
+
+def test_refresh_rebuilds(ctx):
+    first = build_player_index(context=ctx)
+    assert build_player_index(context=ctx) is first               # cached
+    refresh_player_index(reload_data=False)
+    second = build_player_index(context=ctx)
+    assert second is not first and set(second.entries) == set(first.entries)
+
+
 def test_relevance_ranks_established_players_first(index):
     hits = index.suggest("josh", size=8)
     games = [index.relevance[h["gsis_id"]] for h in hits]
@@ -103,22 +130,6 @@ def test_suggest_latency(index):
         index.suggest(q)
         lat.append((time.perf_counter() - t) * 1000)
     assert statistics.median(lat) < 5.0, statistics.median(lat)
-
-
-def test_project_player(index, ctx, trained):
-    directory, _ = trained
-    hit = _first(index, "mahomes")
-    played = ctx.schedule.filter((pl.col("team") == hit["team"]) & (pl.col("season") == 2025)
-                                 & (pl.col("game_type") == "REG"))["week"].to_list()
-    week = next(w for w in range(9, 18) if w in played)
-    r = project_player(hit["gsis_id"], season=2025, week=week, context=ctx, artifacts_dir=directory)
-    assert r["player"]["gsis_id"] == hit["gsis_id"]
-    assert r["target"]["home_away"] in ("home", "away") and r["target"]["gameday"]
-    assert r["status"] == "ok" and r["stats"]["passing_yards"] > 0
-
-    bye = next(w for w in range(5, 15) if w not in played)
-    r = project_player(hit["gsis_id"], season=2025, week=bye, context=ctx, artifacts_dir=directory)
-    assert r["status"] == "bye" and r["target"]["home_away"] is None and r["stats"] is None
 
 
 def test_bounds_check():

@@ -274,6 +274,15 @@ Numbering is stable; don't renumber._
   39-55% of a high-tier player's points vs 55-72% for low tier), not absolute point ranges.
   Thresholds (4/8 games) are still hand-picked, not tuned.
 
+### Q-16. Player search coverage — OPEN (2026-09-27)
+- 142 players on a 2026 weekly roster (QB/RB/WR/TE) are not in the dynastyprocess id crosswalk, so
+  they aren't searchable or projectable (practice-squad / new signings, mostly). Fix path: fall back to
+  nflverse `load_players` (gsis-keyed, has names) for identity when the crosswalk lacks a gsis_id;
+  sleeper_id would then be missing for those players.
+- Injury / inactive status is not modeled (Q-5c): the UI says so on every card.
+- 63 players who played QB/RB/WR/TE in 2025 are on no 2026 roster (released / retired / unsigned); they
+  are excluded from search by design.
+
 ### Q-10. Long-lived carry-overs (from CLAUDE.md / README) — DEFERRED
 - Confidence-tier thresholds are provisional; calibration was non-monotonic
   at every k tested (partly explained by B-2, see STATUS.md).

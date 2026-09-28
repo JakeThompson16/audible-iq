@@ -16,7 +16,8 @@ Currently implemented:
   - `python -m pipeline.train retrain` refits all positions on 2022 through the last completed week. It writes JSON model artifacts to `artifacts/stat_vector/` and a regenerated `artifacts/MODEL_METRICS.md`.
   - `pipeline.predict.predict_player_stats(sleeper_or_gsis_id)` returns a predicted stat line for the player's next game, or for any past week, as of that week.
   - `search.player_search.build_player_index().suggest("mahom")` autocompletes current-season rostered players. `search.projection_service.project_player(gsis_id)` returns that player's projection with home/away.
-  - Tests: `python -m pytest`. Dependencies are pinned in `requirements.txt`.
+  - **Web app:** `python webapp/main.py`, then open http://localhost:8090. Search a player and see their projected stat line for the next game.
+  - Tests: `python -m pytest`. Dependencies are pinned in `requirements.txt` (`pip install -r requirements.txt`).
   - Every projection gets a confidence tier.
   - See [Model Evaluation](#model-evaluation).
 
