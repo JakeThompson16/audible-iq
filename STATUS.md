@@ -24,6 +24,13 @@ a raw Sleeper call.
 - Schedule -> per-team opponent table — `clients/nflreadpy/team_data.py`
 - Evaluation harness — `engine/metrics.py` (logic sound; inputs are suspect, B-1)
 
+## Update 2026-09-27 (search): player search + projection service; sanity bounds
+- `search/player_search.py` (autocomplete over current-season rostered QB/RB/WR/TE,
+  keyed by gsis_id) and `search/projection_service.py` (`project_player`). No UI yet:
+  the NiceGUI part of the request was cut off in prompt.txt.
+- Prediction sanity bounds in the shared derivation path (probability rates [0,1],
+  yardage rates >= 0, `check_stat_line` assertion); backtest metrics unchanged.
+
 ## Update 2026-09-27 (later): all four positions on the stat vector; production pipeline
 - QB moved to `stat_vector` by owner override (see CLAUDE.md); `rolling_plus_skew` kept as the
   alternative implementation and baseline. test.py reproduces QB 7.911 / 0.238 / 0.483 exactly.

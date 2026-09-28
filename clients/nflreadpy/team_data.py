@@ -39,20 +39,24 @@ def load_team_schedule(seasons: int | list[int]) -> pl.DataFrame:
     """
     :return: one row per (team, season, week) game, all game types:
         team, opponent, season, week, game_type, game_id, completed
-        (completed = the game has a final score).
+        (completed = the game has a final score), home (the team is the
+        listed home team; neutral-site games still have a listed home team),
+        gameday.
     """
     if isinstance(seasons, int):
         seasons = [seasons]
 
     schedule = nfl.load_schedules(seasons).select([
-        'game_id', 'home_team', 'away_team', 'season', 'week', 'game_type', 'home_score'
+        'game_id', 'home_team', 'away_team', 'season', 'week', 'game_type', 'home_score', 'gameday'
     ]).with_columns(pl.col('home_score').is_not_null().alias('completed'))
 
-    home = schedule.with_columns(pl.col('home_team').alias('team'), pl.col('away_team').alias('opponent'))
-    away = schedule.with_columns(pl.col('away_team').alias('team'), pl.col('home_team').alias('opponent'))
+    home = schedule.with_columns(pl.col('home_team').alias('team'), pl.col('away_team').alias('opponent'),
+                                 pl.lit(True).alias('home'))
+    away = schedule.with_columns(pl.col('away_team').alias('team'), pl.col('home_team').alias('opponent'),
+                                 pl.lit(False).alias('home'))
 
     return pl.concat([home, away]).select(
-        ['team', 'opponent', 'season', 'week', 'game_type', 'game_id', 'completed']
+        ['team', 'opponent', 'season', 'week', 'game_type', 'game_id', 'completed', 'home', 'gameday']
     ).sort(['season', 'week', 'team'])
 
 

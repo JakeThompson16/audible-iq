@@ -158,6 +158,7 @@ def _result(player, target, status, reason, **extra) -> dict:
         "reason": reason,
         "stats": None,
         "volume_rate_detail": None,
+        "bounds_applied": None,      # sub-models whose raw prediction a sanity bound changed
         "games_this_season": None,
         "confidence": None,
         "projection_method": "stat_vector",
@@ -262,7 +263,7 @@ def predict_many(ids, gsis_id: bool = False, season: int | None = None, week: in
             as_of_keys=placeholders.select(pl.col("opponent_team").alias("defteam"), "season", "week"),
         )
         feats = build_features(frame, epa, model.window).filter(pl.col("_target").fill_null(False))
-        vec = model.predict_stat_vector(feats)
+        vec = model.predict_stat_vector(feats, keep_raw=True)
         spec = STAT_VECTOR_SPECS[position]
 
         for i, player, target, gsis, _, history in batch:
@@ -275,8 +276,10 @@ def predict_many(ids, gsis_id: bool = False, season: int | None = None, week: in
                 results[i] = _result(player, target, "no_history",
                                      "not enough prior games for the trailing features", **common)
                 continue
+            bounded = [t for t in spec.models if abs(row[f"raw_pred_{t}"] - row[f"pred_{t}"]) > 1e-12]
             results[i] = _result(player, target, "ok", None, stats=stats,
-                                 volume_rate_detail={t: row[f"pred_{t}"] for t in spec.models}, **common)
+                                 volume_rate_detail={t: row[f"pred_{t}"] for t in spec.models},
+                                 bounds_applied=bounded, **common)
     for dup, original in duplicates:
         results[dup] = results[original]
     return results

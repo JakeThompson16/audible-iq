@@ -95,7 +95,9 @@ def _as_of(weekly: pl.DataFrame, keys: pl.DataFrame, k: float) -> pl.DataFrame:
     """
     after = _value_after_each_game(weekly, k).sort(["defteam", "_t"])
     left = keys.with_columns((pl.col("season") * 100 + pl.col("week")).alias("_t")).sort(["defteam", "_t"])
-    joined = left.join_asof(after, on="_t", by="defteam", strategy="backward", allow_exact_matches=False)
+    # Both sides are sorted by (defteam, _t); polars can't verify that with `by`.
+    joined = left.join_asof(after, on="_t", by="defteam", strategy="backward", allow_exact_matches=False,
+                            check_sortedness=False)
     return joined.with_columns(
         pl.col("epa_allowed").fill_null(0.0),
         pl.col("_n").fill_null(0).alias("n_games"),

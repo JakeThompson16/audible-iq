@@ -23,10 +23,45 @@ from projections.expected_points.features.stat_rolling import RATE_STATS, add_st
 KEY_COLUMNS = ["gsis_id", "season", "week", "position"]
 
 
-# Rates bounded to [0, 1], and rates that can't be negative. Volumes are
-# floored at 0 too. Yardage rates are left unclipped (negative ypc is real).
-PROBABILITY_RATES = {"catch_rate", "completion_rate"}
-NONNEGATIVE_RATES = {"rush_td_rate", "rec_td_rate", "pass_td_rate", "int_rate"}
+# Sanity bounds applied to every sub-model prediction before derivation
+# (audit 2026-09-27, CLAUDE.md "Prediction sanity bounds"):
+# - volumes >= 0
+# - per-attempt probabilities (catch/completion, TD and INT rates) in [0, 1]
+# - yardage rates >= 0: an expected yards-per-attempt below zero is not
+#   plausible even though single games can be negative (raw TE ypc went
+#   negative in 2 of 8,548 backtest rows, giving negative rushing yards)
+# With these, receptions <= targets and completions <= attempts follow;
+# check_stat_line() asserts it after derivation.
+PROBABILITY_RATES = {"catch_rate", "completion_rate", "rush_td_rate", "rec_td_rate", "pass_td_rate", "int_rate"}
+NONNEGATIVE_RATES = {"ypc", "ypr", "yards_per_completion"}
+
+
+class StatVectorBoundsError(AssertionError):
+    """A derived stat line broke a sanity bound that the clipping should guarantee."""
+
+
+def stat_line_violations(vec: pl.DataFrame, tol: float = 1e-9) -> list[str]:
+    """Rows of a derived stat line that are impossible (negative stats or broken ordering)."""
+    problems = []
+    for col in vec.columns:
+        if col in ("gsis_id", "season", "week", "position") or not vec[col].dtype.is_numeric():
+            continue
+        n = int((vec[col] < -tol).sum())
+        if n:
+            problems.append(f"{col} < 0 in {n} row(s)")
+    for smaller, larger in (("receptions", "targets"), ("completions", "attempts")):
+        if smaller in vec.columns and larger in vec.columns:
+            n = int((vec[smaller] > vec[larger] + tol).sum())
+            if n:
+                problems.append(f"{smaller} > {larger} in {n} row(s)")
+    return problems
+
+
+def check_stat_line(vec: pl.DataFrame) -> pl.DataFrame:
+    problems = stat_line_violations(vec)
+    if problems:
+        raise StatVectorBoundsError("impossible stat line after bounds: " + "; ".join(problems))
+    return vec
 
 
 def rush_receive_derivations(reception_bonus_col: str) -> tuple:
@@ -252,26 +287,30 @@ class StatVectorModel:
     window: int
     train_seasons: list[int]
 
-    def predict_stat_vector(self, features: pl.DataFrame) -> pl.DataFrame:
+    def predict_stat_vector(self, features: pl.DataFrame, keep_raw: bool = False) -> pl.DataFrame:
         """
         :param features: build_features output for this position
+        :param keep_raw: also return raw_pred_<target> (before the sanity bounds)
         :return: KEY_COLUMNS + pred_<target> + the recomposed stat vector
             (derived by multiplication, not fitted). Null wherever an input
             feature is null (no history -> no projection).
         """
         spec = self.spec
         preds = [f"pred_{t}" for t in spec.models]
+        raws = [f"raw_pred_{t}" for t in spec.models]
         df = apply_rate_priors(features, self.priors)
-        df = df.with_columns([self.fits[t].predict(df).alias(f"pred_{t}") for t in spec.models])
+        df = df.with_columns([self.fits[t].predict(df).alias(f"raw_pred_{t}") for t in spec.models])
 
-        # Keep predictions physically possible. clip(lower_bound, upper_bound).
-        clips = []
+        # Sanity bounds (see PROBABILITY_RATES). clip(lower_bound, upper_bound).
+        bounded = []
         for t in spec.models:
+            raw = pl.col(f"raw_pred_{t}")
             if t in PROBABILITY_RATES:
-                clips.append(pl.col(f"pred_{t}").clip(lower_bound=0.0, upper_bound=1.0))
+                raw = raw.clip(lower_bound=0.0, upper_bound=1.0)
             elif t in NONNEGATIVE_RATES or t in spec.volume_targets:
-                clips.append(pl.col(f"pred_{t}").clip(lower_bound=0.0))
-        df = df.with_columns(clips).select(KEY_COLUMNS + preds)
+                raw = raw.clip(lower_bound=0.0)
+            bounded.append(raw.alias(f"pred_{t}"))
+        df = df.with_columns(bounded).select(KEY_COLUMNS + preds + raws)
 
         # Volume predictions become the stat columns, then the derivation chain
         # runs in order (each step may use an earlier output).
@@ -287,7 +326,8 @@ class StatVectorModel:
                 raise ValueError(f"unknown derivation op {op!r} for {out}")
             df = df.with_columns(expr.alias(out))
 
-        return df.select(KEY_COLUMNS + preds + spec.recomposed_columns)
+        out = check_stat_line(df.select(KEY_COLUMNS + preds + spec.recomposed_columns))
+        return out.with_columns(df.select(raws)) if keep_raw else out
 
     def predict_points(self, rows: pl.DataFrame, epa_df: pl.DataFrame, scoring: ScoringSettings) -> pl.DataFrame:
         """

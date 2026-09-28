@@ -120,6 +120,13 @@ Layered to isolate external API/data-source dependencies from core logic:
   - `predict.py` — `predict_player_stats()` / `predict_many()`.
   - `reference_ranges.py` / `reference_ranges.json` — 2019-2025 LOSO
     coefficient ranges used by retrain validation.
+- `search/` — no UI code; used by the UI, and later the agent and the Sleeper roster flow.
+  - `player_search.py` — `build_player_index()` (cached; `refresh_player_index()`),
+    `PlayerIndex.suggest(query, size=8)` / `.get(gsis_id)`. fast-autocomplete
+    over current-season rostered QB/RB/WR/TE, keyed by gsis_id.
+  - `projection_service.py` — `project_player(gsis_id, season=None, week=None)`:
+    thin layer over `predict_player_stats` adding home/away and game date.
+- `requirements.txt` — pinned dependencies.
 - `artifacts/` — `stat_vector/<POS>.json` production models (committed),
   `MODEL_METRICS.md` (regenerated on every retrain). `*.json.prev` is the
   local previous generation (git-ignored).
@@ -451,6 +458,33 @@ stats). `epa_allowed` for a defense-week not yet played is the defense's value
 after its last game (`epa_allowed_from_weekly(..., as_of_keys=...)`, identical
 to what a played week gets). The context is loaded once per process;
 per-player calls don't touch nflreadpy (`refresh_context()` after new data).
+
+**Prediction sanity bounds** (`stat_vector/core.py`, shared by backtest,
+engine and prediction): before derivation, volumes are floored at 0,
+per-attempt probabilities (catch, completion, all TD and INT rates) are
+clipped to [0, 1], and yardage rates (ypc, ypr, yards/completion) are floored
+at 0. `check_stat_line()` then asserts no negative stat, receptions <=
+targets, completions <= attempts (raises `StatVectorBoundsError`).
+Audit 2026-09-27 (raw predictions before bounds, 2019-2025 LOSO, all
+positions): the only violations were TE rush_td_rate < 0 in 22 of 8,548 rows
+and TE ypc < 0 in 2 of 8,548 (the latter gave negative rushing yards before the
+yardage floor existed). Live (all 783 indexed players): the bounds changed 2 TE
+rush_td_rate predictions; 0 derived violations. test.py and the parity tests
+were unchanged. Predictions report `bounds_applied` (sub-models a bound changed).
+
+**Player search** (`search/player_search.py`): membership = on an nflverse
+weekly roster for the current season (same source the pipeline uses for
+current team), at a position in `POSITION_IMPLEMENTATIONS`, and present in the
+`load_player_metadata` crosswalk (so every suggestion resolves in
+`predict_player_stats`; ~140 rostered players are excluded for not being in
+the crosswalk). Names are normalized (accents folded, apostrophes and periods
+removed, hyphens to spaces, Jr./Sr./II/III/IV/V dropped) and indexed as the full
+name plus every trailing part (last names, incl. "st brown"). fast-autocomplete
+0.9.0 gives prefix matches (sorted by `count` = games played over the last two
+seasons) and typo matches (edit distance < 3 once 3+ characters are
+unmatched); a fallback handles "first-prefix last-prefix" ("pat mah"). Names
+collide, so keys map to sets of gsis_ids and a selection is always the
+gsis_id, never re-resolved from the display string ("Name · POS · TEAM").
 
 ## Known bugs already hit once — don't reintroduce
 
